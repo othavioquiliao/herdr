@@ -51,13 +51,13 @@ when an agent finishes work in a background workspace, its dot turns blue. you s
 
 herdr detects agent state by identifying the foreground process and reading terminal output patterns. the following agents have been tested:
 
-| agent | idle | busy | waiting |
-|-------|------|------|---------|
-| [pi](https://pi.dev) | ✓ | ✓ | ✓ |
+| agent | idle | busy | needs attention |
+|-------|------|------|-----------------|
+| [pi](https://pi.dev) | ✓ | ✓ | partial |
 | [claude code](https://docs.anthropic.com/en/docs/claude-code) | ✓ | ✓ | ✓ |
 | [codex](https://github.com/openai/codex) | ✓ | ✓ | ✓ |
 | [droid](https://factory.ai) | ✓ | ✓ | ✓ |
-| [amp](https://ampcode.com) | ✓ | ✓ | - |
+| [amp](https://ampcode.com) | ✓ | ✓ | partial |
 | [opencode](https://github.com/anomalyco/opencode) | ✓ | ✓ | ✓ |
 
 detection heuristics also exist for these agents but haven't been fully tested yet. if you use them and run into issues, please [open an issue](https://github.com/ogulcancelik/herdr/issues):
