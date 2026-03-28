@@ -18,6 +18,7 @@ pub struct Config {
     pub onboarding: Option<bool>,
     pub keys: KeysConfig,
     pub ui: UiConfig,
+    pub advanced: AdvancedConfig,
 }
 
 #[derive(Debug)]
@@ -64,6 +65,13 @@ pub struct UiConfig {
     pub toast: ToastConfig,
     /// Play sounds when agents change state in background workspaces.
     pub sound: SoundConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct AdvancedConfig {
+    /// Allow launching herdr inside an existing herdr pane. Default: false.
+    pub allow_nested: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -920,5 +928,15 @@ claude = "on"
         assert_eq!(config.ui.sound.agents.droid, AgentSoundSetting::Off);
         assert_eq!(config.ui.sound.agents.claude, AgentSoundSetting::On);
         assert_eq!(config.ui.sound.agents.pi, AgentSoundSetting::Default);
+    }
+
+    #[test]
+    fn advanced_allow_nested_parses() {
+        let toml = r#"
+[advanced]
+allow_nested = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.advanced.allow_nested);
     }
 }

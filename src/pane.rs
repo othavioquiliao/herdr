@@ -132,6 +132,7 @@ impl PaneRuntime {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let mut cmd = CommandBuilder::new(&shell);
         cmd.cwd(cwd);
+        cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
 
         let reader = pair
             .master

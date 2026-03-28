@@ -7,6 +7,17 @@ use crossterm::event::{
 use crossterm::execute;
 use tracing::info;
 
+pub(crate) const HERDR_ENV_VAR: &str = "HERDR_ENV";
+pub(crate) const HERDR_ENV_VALUE: &str = "1";
+const NESTED_HERDR_MESSAGES: [&str; 6] = [
+    "inception detected. we need to go deeper... said no one ever.",
+    "recursion is a pathway to many abilities some consider to be... unnatural.",
+    "you were so preoccupied with whether you could, you didn't stop to think if you should. — dr. malcolm",
+    "recursive herdring is disabled. somewhere, a call stack breathes a sigh of relief.",
+    "recursive descent denied. there is, in fact, such a thing as too much herdr.",
+    "recursion detected. base case not found. aborting.",
+];
+
 mod app;
 mod config;
 mod detect;
@@ -109,7 +120,30 @@ const DEFAULT_CONFIG: &str = r#"# herdr configuration
 # By default, droid is muted.
 # [ui.sound.agents]
 # droid = "off"
+
+[advanced]
+# Allow launching herdr from inside a herdr-managed pane.
+# allow_nested = false
 "#;
+
+fn should_block_nested(config: &config::Config) -> bool {
+    should_block_nested_for_env(config, std::env::var(HERDR_ENV_VAR).ok().as_deref())
+}
+
+fn should_block_nested_for_env(config: &config::Config, herdr_env: Option<&str>) -> bool {
+    !config.advanced.allow_nested && herdr_env == Some(HERDR_ENV_VALUE)
+}
+
+fn random_nested_message() -> &'static str {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.subsec_nanos() as usize)
+        .unwrap_or(0);
+    let index = (nanos ^ (std::process::id() as usize)) % NESTED_HERDR_MESSAGES.len();
+    NESTED_HERDR_MESSAGES[index]
+}
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -178,6 +212,15 @@ fn main() -> io::Result<()> {
         }
     }
 
+    let loaded_config = config::Config::load();
+    if should_block_nested(&loaded_config.config) {
+        eprintln!("\x1b[1merror:\x1b[0m nested herdr is disabled by default.");
+        eprintln!("see configuration if you want to enable it.");
+        eprintln!();
+        eprintln!("\x1b[2m\"{}\"\x1b[0m", random_nested_message());
+        std::process::exit(1);
+    }
+
     init_logging();
 
     let no_session = std::env::args().any(|a| a == "--no-session");
@@ -200,7 +243,6 @@ fn main() -> io::Result<()> {
         original_hook(info);
     }));
 
-    let loaded_config = config::Config::load();
     let config = &loaded_config.config;
     let config_diagnostic = if loaded_config.diagnostics.is_empty() {
         None
@@ -271,4 +313,40 @@ fn main() -> io::Result<()> {
 
     info!("herdr exiting");
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_herdr_blocks_when_env_is_set() {
+        let config = config::Config::default();
+        assert!(should_block_nested_for_env(&config, Some(HERDR_ENV_VALUE)));
+    }
+
+    #[test]
+    fn nested_herdr_does_not_block_when_allowed() {
+        let config: config::Config = toml::from_str("[advanced]\nallow_nested = true\n").unwrap();
+        assert!(!should_block_nested_for_env(&config, Some(HERDR_ENV_VALUE)));
+    }
+
+    #[test]
+    fn nested_herdr_does_not_block_without_env() {
+        let config = config::Config::default();
+        assert!(!should_block_nested_for_env(&config, None));
+    }
+
+    #[test]
+    fn random_nested_message_comes_from_known_set() {
+        let message = random_nested_message();
+        assert!(NESTED_HERDR_MESSAGES.contains(&message));
+    }
+
+    #[test]
+    fn nested_message_strings_no_longer_repeat_herdr_prefix() {
+        assert!(NESTED_HERDR_MESSAGES
+            .iter()
+            .all(|message| !message.starts_with("herdr:")));
+    }
 }

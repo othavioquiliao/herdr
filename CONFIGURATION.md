@@ -153,6 +153,23 @@ available agent keys:
 - `droid`
 - `amp`
 
+## advanced
+
+```toml
+[advanced]
+allow_nested = false
+```
+
+### options
+
+| option | default | description |
+|--------|---------|-------------|
+| `advanced.allow_nested` | `false` | allow launching herdr from inside a herdr-managed pane |
+
+notes:
+- by default, herdr blocks nested launches when `HERDR_ENV=1` is already present
+- this is mainly an escape hatch for debugging or intentionally weird setups
+
 ## environment variables
 
 | variable | description |
