@@ -396,15 +396,33 @@ pub(crate) struct DragState {
     pub area: Rect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextMenuKind {
+    Workspace { ws_idx: usize },
+    Pane,
+}
+
 /// Right-click context menu state.
 pub struct ContextMenuState {
-    pub ws_idx: usize,
+    pub kind: ContextMenuKind,
     pub x: u16,
     pub y: u16,
     pub selected: usize,
 }
 
-pub const CONTEXT_MENU_ITEMS: &[&str] = &["Rename", "Close"];
+impl ContextMenuState {
+    pub fn items(&self) -> &'static [&'static str] {
+        match self.kind {
+            ContextMenuKind::Workspace { .. } => &["Rename", "Close"],
+            ContextMenuKind::Pane => &[
+                "Split vertical",
+                "Split horizontal",
+                "Fullscreen",
+                "Close pane",
+            ],
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
@@ -448,6 +466,7 @@ pub struct AppState {
     pub sidebar_width: u16,
     pub sidebar_collapsed: bool,
     pub confirm_close: bool,
+    pub confirm_close_selected_confirm: bool,
     #[allow(dead_code)] // kept for backward compat; palette.accent is the source of truth
     pub accent: Color,
     pub sound: SoundConfig,
@@ -537,6 +556,7 @@ impl AppState {
             sidebar_width: 26,
             sidebar_collapsed: false,
             confirm_close: true,
+            confirm_close_selected_confirm: true,
             accent: Color::Cyan,
             sound: SoundConfig {
                 enabled: false,

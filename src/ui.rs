@@ -1095,14 +1095,11 @@ fn render_confirm_close_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
 
     // Centered popup
     let popup_w = 44u16.min(area.width.saturating_sub(4));
-    let popup_h = 6u16;
+    let popup_h = 5u16;
     let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
     let popup_y = area.y + (area.height.saturating_sub(popup_h)) / 2;
     let popup = Rect::new(popup_x, popup_y, popup_w, popup_h);
 
-    let key = Style::default()
-        .fg(app.palette.accent)
-        .add_modifier(Modifier::BOLD);
     let warn = Style::default()
         .fg(app.palette.red)
         .add_modifier(Modifier::BOLD);
@@ -1125,64 +1122,81 @@ fn render_confirm_close_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
         return;
     };
 
-    if inner.height >= 4 {
+    if inner.height >= 3 {
         let rows = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Length(1),
         ])
-        .areas::<4>(inner);
+        .areas::<3>(inner);
 
         frame.render_widget(Paragraph::new(title_line), rows[0]);
         frame.render_widget(Paragraph::new(detail_line), rows[1]);
 
         let (confirm_rect, cancel_rect) = confirm_close_button_rects(inner);
+        let confirm_selected = app.confirm_close_selected_confirm;
         frame.render_widget(
-            Paragraph::new(" confirm ").style(
+            Paragraph::new(" confirm ").style(if confirm_selected {
                 Style::default()
                     .fg(app.palette.panel_bg)
                     .bg(app.palette.red)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            confirm_rect,
-        );
-        frame.render_widget(
-            Paragraph::new(" cancel ").style(
+                    .add_modifier(Modifier::BOLD)
+            } else {
                 Style::default()
                     .fg(app.palette.text)
                     .bg(app.palette.surface0)
-                    .add_modifier(Modifier::BOLD),
-            ),
+                    .add_modifier(Modifier::BOLD)
+            }),
+            confirm_rect,
+        );
+        frame.render_widget(
+            Paragraph::new(" cancel ").style(if confirm_selected {
+                Style::default()
+                    .fg(app.palette.text)
+                    .bg(app.palette.surface0)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(app.palette.panel_bg)
+                    .bg(app.palette.accent)
+                    .add_modifier(Modifier::BOLD)
+            }),
             cancel_rect,
         );
-
-        let hints = Line::from(vec![
-            Span::styled(" enter/y", key),
-            Span::styled(" confirm  ", dim),
-            Span::styled("esc/click", key),
-            Span::styled(" cancel", dim),
-        ]);
-        frame.render_widget(Paragraph::new(hints), rows[3]);
     }
 }
 
+fn centered_button_row(inner: Rect, widths: &[u16], gap: u16, row_offset: u16) -> Vec<Rect> {
+    let total_w = widths
+        .iter()
+        .copied()
+        .sum::<u16>()
+        .saturating_add(gap.saturating_mul(widths.len().saturating_sub(1) as u16));
+    let mut x = inner.x + inner.width.saturating_sub(total_w) / 2;
+    let y = inner.y + row_offset.min(inner.height.saturating_sub(1));
+    widths
+        .iter()
+        .map(|w| {
+            let rect = Rect::new(
+                x,
+                y,
+                (*w).min(inner.width.saturating_sub(x.saturating_sub(inner.x))),
+                1,
+            );
+            x = x.saturating_add(*w).saturating_add(gap);
+            rect
+        })
+        .collect()
+}
+
 fn confirm_close_button_rects(inner: Rect) -> (Rect, Rect) {
-    let confirm_w = 9u16;
-    let cancel_w = 8u16;
-    let gap = 2u16;
-    let total_w = confirm_w + gap + cancel_w;
-    let x = inner.x + inner.width.saturating_sub(total_w) / 2;
-    let y = inner.y + 2.min(inner.height.saturating_sub(1));
-    (
-        Rect::new(x, y, confirm_w.min(inner.width), 1),
-        Rect::new(
-            x + confirm_w + gap,
-            y,
-            cancel_w.min(inner.width.saturating_sub(confirm_w + gap)),
-            1,
-        ),
-    )
+    let rects = centered_button_row(inner, &[9, 8], 2, 2);
+    (rects[0], rects[1])
+}
+
+fn settings_button_rects(inner: Rect) -> (Rect, Rect) {
+    let rects = centered_button_row(inner, &[7, 7], 2, inner.height.saturating_sub(1));
+    (rects[0], rects[1])
 }
 
 /// Right-click context menu popup anchored near the click position.
@@ -1288,21 +1302,38 @@ fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
         }
     }
 
-    // Footer hints
+    // Footer buttons + hints
     let footer_y = inner.y + inner.height - 1;
     if footer_y > y {
+        let (apply_rect, close_rect) = settings_button_rects(inner);
+        frame.render_widget(
+            Paragraph::new(" apply ").style(
+                Style::default()
+                    .fg(p.panel_bg)
+                    .bg(p.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            apply_rect,
+        );
+        frame.render_widget(
+            Paragraph::new(" close ").style(
+                Style::default()
+                    .fg(p.text)
+                    .bg(p.surface0)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            close_rect,
+        );
+
+        let hint_area = Rect::new(inner.x, footer_y.saturating_sub(1), inner.width, 1);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(" ↑↓", Style::default().fg(p.overlay0)),
                 Span::styled(" select  ", Style::default().fg(p.overlay1)),
                 Span::styled("tab", Style::default().fg(p.overlay0)),
-                Span::styled(" section  ", Style::default().fg(p.overlay1)),
-                Span::styled("⏎", Style::default().fg(p.overlay0)),
-                Span::styled(" apply  ", Style::default().fg(p.overlay1)),
-                Span::styled("esc", Style::default().fg(p.overlay0)),
-                Span::styled(" close", Style::default().fg(p.overlay1)),
+                Span::styled(" section", Style::default().fg(p.overlay1)),
             ])),
-            Rect::new(inner.x, footer_y, inner.width, 1),
+            hint_area,
         );
     }
 }
@@ -1392,8 +1423,6 @@ fn render_settings_toggle(
 }
 
 fn render_context_menu(app: &AppState, frame: &mut Frame) {
-    use crate::app::CONTEXT_MENU_ITEMS;
-
     let Some(menu) = &app.context_menu else {
         return;
     };
@@ -1406,7 +1435,8 @@ fn render_context_menu(app: &AppState, frame: &mut Frame) {
         return;
     };
 
-    let items: Vec<ListItem> = CONTEXT_MENU_ITEMS
+    let items: Vec<ListItem> = menu
+        .items()
         .iter()
         .map(|item| ListItem::new(Line::from(*item)))
         .collect();

@@ -8,7 +8,7 @@ use tracing::warn;
 use crate::layout::{NavDirection, PaneInfo, SplitBorder};
 use crate::selection::Selection;
 
-use super::state::{key_matches, AppState, ContextMenuState, DragState, Mode, CONTEXT_MENU_ITEMS};
+use super::state::{key_matches, AppState, ContextMenuKind, ContextMenuState, DragState, Mode};
 use super::App;
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,16 @@ impl App {
         }
     }
 
+    pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if let Some(action) = self.state.handle_mouse(mouse) {
+            match action {
+                SettingsAction::SaveTheme(name) => self.save_theme(&name),
+                SettingsAction::SaveSound(enabled) => self.save_sound(enabled),
+                SettingsAction::SaveToast(enabled) => self.save_toast(enabled),
+            }
+        }
+    }
+
     async fn handle_terminal_key(&mut self, key: KeyEvent) {
         self.state.clear_selection();
         self.state.update_dismissed = true;
@@ -159,6 +169,22 @@ fn cancel_settings(state: &mut AppState) {
     leave_modal(state);
 }
 
+fn apply_settings(state: &mut AppState) -> Option<SettingsAction> {
+    match state.settings.section {
+        crate::app::state::SettingsSection::Theme => {
+            let theme_name = state.theme_name.clone();
+            state.settings.original_palette = None;
+            state.settings.original_theme = None;
+            leave_modal(state);
+            Some(SettingsAction::SaveTheme(theme_name))
+        }
+        _ => {
+            leave_modal(state);
+            None
+        }
+    }
+}
+
 fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Option<SettingsAction> {
     use crate::app::state::SettingsSection;
 
@@ -176,13 +202,7 @@ fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Option<Settings
                     preview_selected_theme(state);
                 }
             }
-            KeyCode::Enter => {
-                let theme_name = state.theme_name.clone();
-                state.settings.original_palette = None;
-                state.settings.original_theme = None;
-                leave_modal(state);
-                return Some(SettingsAction::SaveTheme(theme_name));
-            }
+            KeyCode::Enter => return apply_settings(state),
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::Sound;
                 state.settings.selected = usize::from(!state.sound_enabled());
@@ -346,7 +366,7 @@ fn execute_navigate_action(state: &mut AppState, action: NavigateAction) {
         NavigateAction::CloseWorkspace => {
             if !state.workspaces.is_empty() {
                 if state.confirm_close {
-                    state.mode = Mode::ConfirmClose;
+                    open_confirm_close(state);
                 } else {
                     state.close_selected_workspace();
                     leave_navigate_mode(state);
@@ -458,6 +478,11 @@ fn handle_resize_key(state: &mut AppState, key: KeyEvent) {
     }
 }
 
+fn open_confirm_close(state: &mut AppState) {
+    state.confirm_close_selected_confirm = true;
+    state.mode = Mode::ConfirmClose;
+}
+
 fn confirm_close_accept(state: &mut AppState) {
     state.close_selected_workspace();
     if state.workspaces.is_empty() {
@@ -473,8 +498,58 @@ fn confirm_close_cancel(state: &mut AppState) {
 
 fn handle_confirm_close_key(state: &mut AppState, key: KeyEvent) {
     match key.code {
-        KeyCode::Char('y') | KeyCode::Enter => confirm_close_accept(state),
-        _ => confirm_close_cancel(state),
+        KeyCode::Left | KeyCode::Char('h') => state.confirm_close_selected_confirm = true,
+        KeyCode::Right | KeyCode::Char('l') => state.confirm_close_selected_confirm = false,
+        KeyCode::Enter => {
+            if state.confirm_close_selected_confirm {
+                confirm_close_accept(state);
+            } else {
+                confirm_close_cancel(state);
+            }
+        }
+        KeyCode::Esc => confirm_close_cancel(state),
+        _ => {}
+    }
+}
+
+fn apply_context_menu_action(state: &mut AppState, menu: ContextMenuState, idx: usize) {
+    let item = menu.items().get(idx).copied();
+    match (menu.kind, item) {
+        (ContextMenuKind::Workspace { ws_idx }, Some("Rename")) => {
+            state.selected = ws_idx;
+            state.name_input = state.workspaces[ws_idx].display_name();
+            state.mode = Mode::RenameSession;
+        }
+        (ContextMenuKind::Workspace { ws_idx }, Some("Close")) => {
+            state.selected = ws_idx;
+            if state.confirm_close {
+                open_confirm_close(state);
+            } else {
+                state.close_selected_workspace();
+                state.mode = Mode::Navigate;
+            }
+        }
+        (ContextMenuKind::Pane, Some("Split vertical")) => {
+            state.split_pane(Direction::Horizontal);
+            state.mode = Mode::Terminal;
+        }
+        (ContextMenuKind::Pane, Some("Split horizontal")) => {
+            state.split_pane(Direction::Vertical);
+            state.mode = Mode::Terminal;
+        }
+        (ContextMenuKind::Pane, Some("Fullscreen")) => {
+            state.toggle_fullscreen();
+            state.mode = Mode::Terminal;
+        }
+        (ContextMenuKind::Pane, Some("Close pane")) => {
+            state.close_pane();
+            state.mode = if state.active.is_some() {
+                Mode::Terminal
+            } else {
+                Mode::Navigate
+            };
+        }
+        _ => leave_modal(state),
     }
 }
 
@@ -482,7 +557,7 @@ fn handle_context_menu_key(state: &mut AppState, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
             state.context_menu = None;
-            state.mode = Mode::Navigate;
+            leave_modal(state);
         }
         KeyCode::Up => {
             if let Some(menu) = &mut state.context_menu {
@@ -493,30 +568,15 @@ fn handle_context_menu_key(state: &mut AppState, key: KeyEvent) {
         }
         KeyCode::Down => {
             if let Some(menu) = &mut state.context_menu {
-                if menu.selected < CONTEXT_MENU_ITEMS.len() - 1 {
+                if menu.selected + 1 < menu.items().len() {
                     menu.selected += 1;
                 }
             }
         }
         KeyCode::Enter => {
             if let Some(menu) = state.context_menu.take() {
-                match CONTEXT_MENU_ITEMS[menu.selected] {
-                    "Rename" => {
-                        state.selected = menu.ws_idx;
-                        state.name_input = state.workspaces[menu.ws_idx].display_name();
-                        state.mode = Mode::RenameSession;
-                    }
-                    "Close" => {
-                        state.selected = menu.ws_idx;
-                        if state.confirm_close {
-                            state.mode = Mode::ConfirmClose;
-                        } else {
-                            state.close_selected_workspace();
-                            state.mode = Mode::Navigate;
-                        }
-                    }
-                    _ => state.mode = Mode::Navigate,
-                }
+                let idx = menu.selected;
+                apply_context_menu_action(state, menu, idx);
             }
         }
         _ => {}
@@ -547,7 +607,10 @@ impl AppState {
     }
 
     fn handle_onboarding_mouse(&mut self, mouse: MouseEvent) {
-        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        if !matches!(
+            mouse.kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Moved
+        ) {
             return;
         }
 
@@ -573,6 +636,9 @@ impl AppState {
                 let options_start_y = inner.y + 2;
                 if mouse.row >= options_start_y && mouse.row < options_start_y + 4 {
                     self.onboarding_selected = (mouse.row - options_start_y) as usize;
+                    if matches!(mouse.kind, MouseEventKind::Moved) {
+                        return;
+                    }
                     return;
                 }
 
@@ -592,10 +658,172 @@ impl AppState {
         }
     }
 
-    pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) {
+    fn settings_popup_rect(&self) -> Rect {
+        let area = self.screen_rect();
+        let popup_w = 56u16.min(area.width.saturating_sub(4));
+        let popup_h = 20u16.min(area.height.saturating_sub(2));
+        let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+        let popup_y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+        Rect::new(popup_x, popup_y, popup_w, popup_h)
+    }
+
+    fn settings_inner_rect(&self) -> Rect {
+        let popup = self.settings_popup_rect();
+        Rect::new(
+            popup.x + 1,
+            popup.y + 1,
+            popup.width.saturating_sub(2),
+            popup.height.saturating_sub(2),
+        )
+    }
+
+    fn settings_tab_at(&self, col: u16, row: u16) -> Option<crate::app::state::SettingsSection> {
+        use crate::app::state::SettingsSection;
+
+        let inner = self.settings_inner_rect();
+        let tab_y = inner.y + 1;
+        if row != tab_y {
+            return None;
+        }
+        let mut x = inner.x;
+        for section in SettingsSection::ALL {
+            let width = section.label().len() as u16 + 2;
+            if col >= x && col < x + width {
+                return Some(*section);
+            }
+            x += width + 1;
+        }
+        None
+    }
+
+    fn settings_content_rect(&self) -> Rect {
+        let inner = self.settings_inner_rect();
+        let y = inner.y + 3;
+        Rect::new(inner.x, y, inner.width, inner.y + inner.height - y)
+    }
+
+    fn settings_list_index_at(&self, row: u16) -> Option<usize> {
+        let area = self.settings_content_rect();
+        if row < area.y || row >= area.y + area.height {
+            return None;
+        }
+
+        match self.settings.section {
+            crate::app::state::SettingsSection::Theme => {
+                let max_visible = area.height as usize;
+                let scroll = if self.settings.selected >= max_visible {
+                    self.settings.selected - max_visible + 1
+                } else {
+                    0
+                };
+                let idx = scroll + (row - area.y) as usize;
+                (idx < crate::app::state::THEME_NAMES.len()).then_some(idx)
+            }
+            crate::app::state::SettingsSection::Sound
+            | crate::app::state::SettingsSection::Toast => {
+                let list_y = area.y + 2;
+                if row >= list_y && row < list_y + 2 {
+                    Some((row - list_y) as usize)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn settings_button_at(&self, col: u16, row: u16) -> Option<&'static str> {
+        let inner = self.settings_inner_rect();
+        let footer_y = inner.y + inner.height.saturating_sub(1);
+        if row != footer_y {
+            return None;
+        }
+        let total_w = 7u16 + 2 + 7u16;
+        let apply_x = inner.x + inner.width.saturating_sub(total_w) / 2;
+        let close_x = apply_x + 9;
+        if col >= apply_x && col < apply_x + 7 {
+            Some("apply")
+        } else if col >= close_x && col < close_x + 7 {
+            Some("close")
+        } else {
+            None
+        }
+    }
+
+    fn handle_settings_mouse(&mut self, mouse: MouseEvent) -> Option<SettingsAction> {
+        use crate::app::state::SettingsSection;
+
+        match mouse.kind {
+            MouseEventKind::Moved => {
+                if let Some(section) = self.settings_tab_at(mouse.column, mouse.row) {
+                    self.settings.section = section;
+                    self.settings.selected = match section {
+                        SettingsSection::Theme => current_theme_index(&self.theme_name),
+                        SettingsSection::Sound => usize::from(!self.sound_enabled()),
+                        SettingsSection::Toast => usize::from(!self.toast_config.enabled),
+                    };
+                    return None;
+                }
+                if let Some(idx) = self.settings_list_index_at(mouse.row) {
+                    self.settings.selected = idx;
+                    if self.settings.section == SettingsSection::Theme {
+                        preview_selected_theme(self);
+                    }
+                }
+                None
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(section) = self.settings_tab_at(mouse.column, mouse.row) {
+                    self.settings.section = section;
+                    self.settings.selected = match section {
+                        SettingsSection::Theme => current_theme_index(&self.theme_name),
+                        SettingsSection::Sound => usize::from(!self.sound_enabled()),
+                        SettingsSection::Toast => usize::from(!self.toast_config.enabled),
+                    };
+                    return None;
+                }
+                if let Some(idx) = self.settings_list_index_at(mouse.row) {
+                    self.settings.selected = idx;
+                    return match self.settings.section {
+                        SettingsSection::Theme => {
+                            preview_selected_theme(self);
+                            None
+                        }
+                        SettingsSection::Sound => {
+                            let enabled = idx == 0;
+                            self.sound.enabled = enabled;
+                            Some(SettingsAction::SaveSound(enabled))
+                        }
+                        SettingsSection::Toast => {
+                            let enabled = idx == 0;
+                            self.toast_config.enabled = enabled;
+                            Some(SettingsAction::SaveToast(enabled))
+                        }
+                    };
+                }
+                match self.settings_button_at(mouse.column, mouse.row) {
+                    Some("apply") => apply_settings(self),
+                    Some("close") => {
+                        cancel_settings(self);
+                        None
+                    }
+                    _ => {
+                        cancel_settings(self);
+                        None
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<SettingsAction> {
         if self.mode == Mode::Onboarding {
             self.handle_onboarding_mouse(mouse);
-            return;
+            return None;
+        }
+
+        if self.mode == Mode::Settings {
+            return self.handle_settings_mouse(mouse);
         }
 
         let sidebar = self.view.sidebar_rect;
@@ -609,43 +837,24 @@ impl AppState {
                 self.selection = None;
 
                 if self.mode == Mode::ConfirmClose {
-                    if self.confirm_close_confirm_button_at(mouse.column, mouse.row) {
-                        confirm_close_accept(self);
-                    } else {
-                        confirm_close_cancel(self);
+                    match self.confirm_close_button_at(mouse.column, mouse.row) {
+                        Some(true) => confirm_close_accept(self),
+                        Some(false) => confirm_close_cancel(self),
+                        None => confirm_close_cancel(self),
                     }
-                    return;
+                    return None;
                 }
 
                 if self.mode == Mode::ContextMenu {
-                    if let Some(menu) = &self.context_menu {
-                        let item_idx = self.context_menu_item_at(mouse.column, mouse.row);
+                    let item_idx = self.context_menu_item_at(mouse.column, mouse.row);
+                    if let Some(menu) = self.context_menu.take() {
                         if let Some(idx) = item_idx {
-                            let ws_idx = menu.ws_idx;
-                            self.context_menu = None;
-                            match CONTEXT_MENU_ITEMS[idx] {
-                                "Rename" => {
-                                    self.selected = ws_idx;
-                                    self.name_input = self.workspaces[ws_idx].display_name();
-                                    self.mode = Mode::RenameSession;
-                                }
-                                "Close" => {
-                                    self.selected = ws_idx;
-                                    if self.confirm_close {
-                                        self.mode = Mode::ConfirmClose;
-                                    } else {
-                                        self.close_selected_workspace();
-                                        self.mode = Mode::Navigate;
-                                    }
-                                }
-                                _ => self.mode = Mode::Navigate,
-                            }
+                            apply_context_menu_action(self, menu, idx);
                         } else {
-                            self.context_menu = None;
-                            self.mode = Mode::Navigate;
+                            leave_modal(self);
                         }
                     }
-                    return;
+                    return None;
                 }
 
                 if !in_sidebar {
@@ -655,38 +864,33 @@ impl AppState {
                             direction: border.direction,
                             area: border.area,
                         });
-                        return;
+                        return None;
                     }
                 }
 
                 if in_sidebar {
                     if self.sidebar_collapsed {
-                        // Collapsed: each workspace is 1 row
                         let idx = (mouse.row - sidebar.y) as usize;
                         if idx < self.workspaces.len() {
                             self.switch_workspace(idx);
                             self.mode = Mode::Terminal;
                         }
-                        return;
+                        return None;
                     }
 
-                    // Two-section layout: top half is workspaces
                     let total_h = sidebar.height as usize;
                     let ws_h = (total_h + 1) / 2;
                     let ws_bottom = sidebar.y + ws_h as u16;
-
-                    // "new" button is at the last row of workspace section
                     let new_row = ws_bottom.saturating_sub(1);
                     if mouse.row == new_row {
                         self.request_new_workspace = true;
-                        return;
+                        return None;
                     }
 
-                    // Workspace clicks in top section
                     if let Some(idx) = self.workspace_at_row(mouse.row) {
                         self.switch_workspace(idx);
                         self.mode = Mode::Terminal;
-                        return;
+                        return None;
                     }
                 } else if let Some(info) = self.pane_at(mouse.column, mouse.row).cloned() {
                     let (row, col) = (
@@ -703,22 +907,20 @@ impl AppState {
                     if self.mode != Mode::Terminal {
                         self.mode = Mode::Terminal;
                     }
-                } else {
-                    if let Some(info) = self.view.pane_infos.iter().find(|p| {
-                        mouse.column >= p.rect.x
-                            && mouse.column < p.rect.x + p.rect.width
-                            && mouse.row >= p.rect.y
-                            && mouse.row < p.rect.y + p.rect.height
-                    }) {
-                        let id = info.id;
-                        if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
-                            if ws.layout.focused() != id {
-                                ws.layout.focus_pane(id);
-                            }
+                } else if let Some(info) = self.view.pane_infos.iter().find(|p| {
+                    mouse.column >= p.rect.x
+                        && mouse.column < p.rect.x + p.rect.width
+                        && mouse.row >= p.rect.y
+                        && mouse.row < p.rect.y + p.rect.height
+                }) {
+                    let id = info.id;
+                    if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
+                        if ws.layout.focused() != id {
+                            ws.layout.focus_pane(id);
                         }
-                        if self.mode != Mode::Terminal {
-                            self.mode = Mode::Terminal;
-                        }
+                    }
+                    if self.mode != Mode::Terminal {
+                        self.mode = Mode::Terminal;
                     }
                 }
             }
@@ -747,7 +949,6 @@ impl AppState {
 
             MouseEventKind::Up(MouseButton::Left) => {
                 if self.drag.take().is_some() {
-                    // Drag ended
                 } else {
                     let was_click = self.selection.as_ref().is_some_and(|s| s.was_just_click());
                     if was_click {
@@ -786,11 +987,39 @@ impl AppState {
                 }
             }
 
+            MouseEventKind::Moved if self.mode == Mode::ConfirmClose => {
+                if let Some(selected_confirm) =
+                    self.confirm_close_button_at(mouse.column, mouse.row)
+                {
+                    self.confirm_close_selected_confirm = selected_confirm;
+                }
+            }
+
+            MouseEventKind::Moved if self.mode == Mode::ContextMenu => {
+                if let Some(idx) = self.context_menu_item_at(mouse.column, mouse.row) {
+                    if let Some(menu) = &mut self.context_menu {
+                        menu.selected = idx;
+                    }
+                }
+            }
+
             MouseEventKind::Down(MouseButton::Right) if in_sidebar && !self.sidebar_collapsed => {
                 if let Some(idx) = self.workspace_at_row(mouse.row) {
                     self.selected = idx;
                     self.context_menu = Some(ContextMenuState {
-                        ws_idx: idx,
+                        kind: ContextMenuKind::Workspace { ws_idx: idx },
+                        x: mouse.column,
+                        y: mouse.row,
+                        selected: 0,
+                    });
+                    self.mode = Mode::ContextMenu;
+                }
+            }
+
+            MouseEventKind::Down(MouseButton::Right) if !in_sidebar => {
+                if self.pane_at(mouse.column, mouse.row).is_some() {
+                    self.context_menu = Some(ContextMenuState {
+                        kind: ContextMenuKind::Pane,
                         x: mouse.column,
                         y: mouse.row,
                         selected: 0,
@@ -801,6 +1030,8 @@ impl AppState {
 
             _ => {}
         }
+
+        None
     }
 
     /// Find which workspace index a sidebar row belongs to (two-section layout).
@@ -843,8 +1074,14 @@ impl AppState {
     pub(crate) fn context_menu_rect(&self) -> Option<Rect> {
         let menu = self.context_menu.as_ref()?;
         let screen = self.screen_rect();
-        let menu_w = 14u16.min(screen.width.max(1));
-        let menu_h = (CONTEXT_MENU_ITEMS.len() as u16 + 2).min(screen.height.max(1));
+        let max_item_w = menu
+            .items()
+            .iter()
+            .map(|item| item.len() as u16)
+            .max()
+            .unwrap_or(0);
+        let menu_w = (max_item_w + 4).max(14).min(screen.width.max(1));
+        let menu_h = (menu.items().len() as u16 + 2).min(screen.height.max(1));
         let x = menu.x.min(screen.x + screen.width.saturating_sub(menu_w));
         let y = menu.y.min(screen.y + screen.height.saturating_sub(menu_h));
         Some(Rect::new(x, y, menu_w, menu_h))
@@ -859,7 +1096,7 @@ impl AppState {
         Rect::new(popup_x, popup_y, popup_w, popup_h)
     }
 
-    fn confirm_close_confirm_button_at(&self, col: u16, row: u16) -> bool {
+    fn confirm_close_button_at(&self, col: u16, row: u16) -> Option<bool> {
         let popup = self.confirm_close_rect();
         let inner = Rect::new(
             popup.x + 1,
@@ -873,7 +1110,16 @@ impl AppState {
         let total_w = confirm_w + gap + cancel_w;
         let x = inner.x + inner.width.saturating_sub(total_w) / 2;
         let y = inner.y + 2.min(inner.height.saturating_sub(1));
-        col >= x && col < x + confirm_w && row == y
+        if row != y {
+            return None;
+        }
+        if col >= x && col < x + confirm_w {
+            Some(true)
+        } else if col >= x + confirm_w + gap && col < x + total_w {
+            Some(false)
+        } else {
+            None
+        }
     }
 
     fn context_menu_item_at(&self, col: u16, row: u16) -> Option<usize> {
@@ -882,10 +1128,15 @@ impl AppState {
         let inner_y = menu_rect.y + 1;
         let inner_w = menu_rect.width.saturating_sub(2);
         let inner_h = menu_rect.height.saturating_sub(2);
+        let item_count = self
+            .context_menu
+            .as_ref()
+            .map(|menu| menu.items().len() as u16)
+            .unwrap_or(0);
         if col >= inner_x
             && col < inner_x + inner_w
             && row >= inner_y
-            && row < inner_y + inner_h.min(CONTEXT_MENU_ITEMS.len() as u16)
+            && row < inner_y + inner_h.min(item_count)
         {
             Some((row - inner_y) as usize)
         } else {

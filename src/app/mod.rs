@@ -21,7 +21,7 @@ use crate::config::Config;
 use crate::events::AppEvent;
 use crate::workspace::Workspace;
 
-pub use state::{AppState, Mode, ToastKind, ViewState, CONTEXT_MENU_ITEMS};
+pub use state::{AppState, Mode, ToastKind, ViewState};
 
 /// Full application: AppState + runtime concerns (event channels, async I/O).
 pub struct App {
@@ -134,6 +134,7 @@ impl App {
             sidebar_width: config.ui.sidebar_width,
             sidebar_collapsed: false,
             confirm_close: config.ui.confirm_close,
+            confirm_close_selected_confirm: true,
             accent: crate::config::parse_color(&config.ui.accent),
             sound: config.ui.sound.clone(),
             toast_config: config.ui.toast.clone(),
@@ -223,7 +224,7 @@ impl App {
                         self.handle_key(key).await;
                     }
                     Event::Paste(text) => self.handle_paste(text).await,
-                    Event::Mouse(mouse) => self.state.handle_mouse(mouse),
+                    Event::Mouse(mouse) => self.handle_mouse(mouse),
                     Event::Resize(_, _) => {}
                     _ => {}
                 }
