@@ -164,30 +164,21 @@ fn kitty_ctrl_shift_a() {
 }
 
 #[test]
-fn kitty_shift_uppercase_letter_uses_base_codepoint() {
+fn kitty_shift_uppercase_letter_sends_text() {
     let key = KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT);
-    assert_eq!(
-        encode_key(key, KeyboardProtocol::Kitty { flags: 1 }),
-        b"\x1b[108;2u"
-    );
+    assert_eq!(encode_key(key, KeyboardProtocol::Kitty { flags: 1 }), b"L");
 }
 
 #[test]
-fn kitty_shift_uppercase_letter_with_alternate_keys_reports_shifted_codepoint() {
+fn kitty_shift_uppercase_letter_ignores_alternate_key_reporting_for_text() {
     let key = KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT);
-    assert_eq!(
-        encode_key(key, KeyboardProtocol::Kitty { flags: 7 }),
-        b"\x1b[108:76;2:1u"
-    );
+    assert_eq!(encode_key(key, KeyboardProtocol::Kitty { flags: 7 }), b"L");
 }
 
 #[test]
-fn kitty_shift_lowercase_letter_normalizes_to_base_codepoint() {
+fn kitty_shift_lowercase_letter_sends_uppercase_text() {
     let key = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::SHIFT);
-    assert_eq!(
-        encode_key(key, KeyboardProtocol::Kitty { flags: 1 }),
-        b"\x1b[108;2u"
-    );
+    assert_eq!(encode_key(key, KeyboardProtocol::Kitty { flags: 1 }), b"L");
 }
 
 #[test]
@@ -274,26 +265,20 @@ fn kitty_repeat_event_type_is_encoded_when_requested() {
 }
 
 #[test]
-fn kitty_release_event_type_and_alternate_keys_are_encoded_together() {
+fn kitty_shift_letter_release_does_not_emit_text() {
     let key = KeyEvent::new_with_kind(
         KeyCode::Char('L'),
         KeyModifiers::SHIFT,
         crossterm::event::KeyEventKind::Release,
     );
-    assert_eq!(
-        encode_key(key, KeyboardProtocol::Kitty { flags: 7 }),
-        b"\x1b[108:76;2:3u"
-    );
+    assert_eq!(encode_key(key, KeyboardProtocol::Kitty { flags: 7 }), b"");
 }
 
 #[test]
-fn kitty_rich_key_data_can_preserve_shifted_symbol_pairs() {
+fn kitty_shifted_symbol_sends_text() {
     let key = TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT)
         .with_shifted_codepoint('!' as u32);
-    assert_eq!(
-        encode_terminal_key(key, KeyboardProtocol::Kitty { flags: 7 }),
-        b"\x1b[49:33;2:1u"
-    );
+    assert_eq!(encode_terminal_key(key, KeyboardProtocol::Kitty { flags: 7 }), b"!");
 }
 
 #[test]
@@ -433,18 +418,11 @@ fn legacy_modified_special_roundtrip_matrix() {
 }
 
 #[test]
-fn kitty_shifted_symbol_roundtrip_preserves_alternate_key() {
+fn kitty_shifted_symbol_prefers_text_over_roundtrip_key_identity() {
     let key = TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT)
         .with_shifted_codepoint('!' as u32);
     let encoded = encode_terminal_key(key, KeyboardProtocol::Kitty { flags: 7 });
-    let parsed = parse_terminal_key_sequence(std::str::from_utf8(&encoded).unwrap()).unwrap();
-    assert_terminal_key_eq(
-        parsed,
-        KeyCode::Char('1'),
-        KeyModifiers::SHIFT,
-        crossterm::event::KeyEventKind::Press,
-        Some('!' as u32),
-    );
+    assert_eq!(encoded, b"!");
 }
 
 #[test]
@@ -501,21 +479,14 @@ fn kitty_functional_key_matrix_is_covered() {
 }
 
 #[test]
-fn kitty_shifted_symbol_pair_matrix_is_covered() {
+fn kitty_shifted_symbol_pair_matrix_is_encoded_as_text() {
     let cases = [('1', '!'), ('/', '?'), ('[', '{')];
 
     for (base, shifted) in cases {
         let key = TerminalKey::new(KeyCode::Char(base), KeyModifiers::SHIFT)
             .with_shifted_codepoint(shifted as u32);
         let encoded = encode_terminal_key(key, KeyboardProtocol::Kitty { flags: 7 });
-        let parsed = parse_terminal_key_sequence(std::str::from_utf8(&encoded).unwrap()).unwrap();
-        assert_terminal_key_eq(
-            parsed,
-            KeyCode::Char(base),
-            KeyModifiers::SHIFT,
-            crossterm::event::KeyEventKind::Press,
-            Some(shifted as u32),
-        );
+        assert_eq!(encoded, shifted.to_string().into_bytes(), "base={base}");
     }
 }
 

@@ -11,6 +11,10 @@ pub fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
 }
 
 pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<u8> {
+    if let Some(bytes) = encode_text_input(&key) {
+        return bytes;
+    }
+
     if let KeyboardProtocol::Kitty { flags } = protocol {
         if let Some(bytes) = try_encode_csi_u(&key, flags) {
             return bytes;
@@ -185,6 +189,41 @@ fn kitty_modifier(mods: KeyModifiers) -> u32 {
         m += 32;
     }
     m
+}
+
+fn encode_text_input(key: &TerminalKey) -> Option<Vec<u8>> {
+    if key.modifiers != KeyModifiers::SHIFT {
+        return None;
+    }
+
+    let ch = match key.code {
+        KeyCode::Char(ch) => shifted_text_char(key, ch)?,
+        _ => return None,
+    };
+
+    match key.kind {
+        crossterm::event::KeyEventKind::Press | crossterm::event::KeyEventKind::Repeat => {
+            let mut buf = [0u8; 4];
+            Some(ch.encode_utf8(&mut buf).as_bytes().to_vec())
+        }
+        crossterm::event::KeyEventKind::Release => Some(Vec::new()),
+    }
+}
+
+fn shifted_text_char(key: &TerminalKey, ch: char) -> Option<char> {
+    if let Some(shifted) = key.shifted_codepoint.and_then(char::from_u32) {
+        return Some(shifted);
+    }
+
+    if ch.is_ascii_uppercase() {
+        return Some(ch);
+    }
+
+    if ch.is_ascii_lowercase() {
+        return Some(ch.to_ascii_uppercase());
+    }
+
+    None
 }
 
 fn canonical_kitty_char(ch: char, mods: KeyModifiers) -> char {
