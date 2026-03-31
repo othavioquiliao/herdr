@@ -332,6 +332,7 @@ pub struct ViewState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Onboarding,
+    ReleaseNotes,
     Navigate,
     Terminal,
     RenameSession,
@@ -399,6 +400,9 @@ pub(crate) enum DragTarget {
         pane_id: crate::layout::PaneId,
         grab_row_offset: u16,
     },
+    ReleaseNotesScrollbar {
+        grab_row_offset: u16,
+    },
     SidebarDivider,
 }
 
@@ -449,6 +453,13 @@ pub struct ToastNotification {
     pub context: String,
 }
 
+pub struct ReleaseNotesState {
+    pub version: String,
+    pub body: String,
+    pub scroll: u16,
+    pub preview: bool,
+}
+
 /// All application state — pure data, no channels or async runtime.
 /// Testable without PTYs or a tokio runtime.
 pub struct AppState {
@@ -462,6 +473,7 @@ pub struct AppState {
     pub name_input: String,
     pub onboarding_step: usize,
     pub onboarding_selected: usize,
+    pub release_notes: Option<ReleaseNotesState>,
     // View geometry (computed before render, consumed by render + mouse)
     pub view: ViewState,
     pub(crate) drag: Option<DragState>,
@@ -551,6 +563,7 @@ impl AppState {
             name_input: String::new(),
             onboarding_step: 0,
             onboarding_selected: 1,
+            release_notes: None,
             view: ViewState {
                 sidebar_rect: Rect::default(),
                 terminal_area: Rect::default(),

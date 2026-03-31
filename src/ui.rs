@@ -1,8 +1,8 @@
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
     Frame,
 };
 use tui_term::widget::PseudoTerminal;
@@ -76,6 +76,7 @@ pub fn render(app: &AppState, frame: &mut Frame) {
 
     match app.mode {
         Mode::Onboarding => render_onboarding_overlay(app, frame, frame.area()),
+        Mode::ReleaseNotes => render_release_notes_overlay(app, frame, frame.area()),
         Mode::Navigate => render_navigate_overlay(app, frame, terminal_area),
         Mode::Resize => render_resize_overlay(app, frame, terminal_area),
         Mode::ConfirmClose => render_confirm_close_overlay(app, frame, terminal_area),
@@ -694,7 +695,19 @@ pub(crate) fn pane_scrollbar_rect(info: &PaneInfo) -> Option<Rect> {
     info.scrollbar_rect
 }
 
-fn should_show_scrollbar(metrics: crate::pane::ScrollMetrics) -> bool {
+pub(crate) fn release_notes_scrollbar_rect(
+    body: Rect,
+    metrics: crate::pane::ScrollMetrics,
+) -> Option<Rect> {
+    (should_show_scrollbar(metrics) && body.width > 1).then_some(Rect::new(
+        body.x + body.width - 1,
+        body.y,
+        1,
+        body.height,
+    ))
+}
+
+pub(crate) fn should_show_scrollbar(metrics: crate::pane::ScrollMetrics) -> bool {
     metrics.max_offset_from_bottom > 0
 }
 
@@ -803,30 +816,20 @@ pub(crate) fn scrollbar_offset_from_drag_row(
     scrollbar_offset_from_thumb_top(metrics, track, desired_top)
 }
 
-fn render_pane_scrollbar(
-    app: &AppState,
+fn render_scrollbar(
     frame: &mut Frame,
-    info: &PaneInfo,
-    rt: &crate::pane::PaneRuntime,
+    metrics: crate::pane::ScrollMetrics,
+    track: Rect,
+    track_color: Color,
+    thumb_color: Color,
+    thumb_symbol: &str,
 ) {
-    let Some(metrics) = rt.scroll_metrics() else {
-        return;
-    };
-    let Some(track) = pane_scrollbar_rect(info) else {
-        return;
-    };
     if metrics.max_offset_from_bottom == 0 {
         return;
     }
 
     let Some(thumb) = scrollbar_thumb(metrics, track) else {
         return;
-    };
-
-    let (track_color, thumb_color, thumb_symbol) = if info.is_focused {
-        (app.palette.overlay0, app.palette.overlay1, "▐")
-    } else {
-        (app.palette.surface_dim, app.palette.overlay0, "▕")
     };
 
     let buf = frame.buffer_mut();
@@ -840,6 +843,35 @@ fn render_pane_scrollbar(
         cell.set_symbol(thumb_symbol);
         cell.set_style(Style::default().fg(thumb_color));
     }
+}
+
+fn render_pane_scrollbar(
+    app: &AppState,
+    frame: &mut Frame,
+    info: &PaneInfo,
+    rt: &crate::pane::PaneRuntime,
+) {
+    let Some(metrics) = rt.scroll_metrics() else {
+        return;
+    };
+    let Some(track) = pane_scrollbar_rect(info) else {
+        return;
+    };
+
+    let (track_color, thumb_color, thumb_symbol) = if info.is_focused {
+        (app.palette.overlay0, app.palette.overlay1, "▐")
+    } else {
+        (app.palette.surface_dim, app.palette.overlay0, "▕")
+    };
+
+    render_scrollbar(
+        frame,
+        metrics,
+        track,
+        track_color,
+        thumb_color,
+        thumb_symbol,
+    );
 }
 
 fn render_selection_highlight(
@@ -971,6 +1003,133 @@ fn render_onboarding_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
         0 => render_onboarding_welcome(app, frame, area),
         _ => render_onboarding_notifications(app, frame, area),
     }
+}
+
+fn render_release_notes_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
+    let Some(notes) = &app.release_notes else {
+        return;
+    };
+
+    dim_background(frame, area);
+
+    let Some(inner) = render_modal_shell(frame, area, 76, 20, &app.palette) else {
+        return;
+    };
+    if inner.height < 8 || inner.width < 20 {
+        return;
+    }
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas::<5>(inner);
+
+    render_modal_header(frame, rows[0], &format!("v{}", notes.version), &app.palette);
+    frame.render_widget(
+        Paragraph::new(" what's new in this release")
+            .style(Style::default().fg(app.palette.overlay1)),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            " [ close ] ",
+            Style::default()
+                .fg(app.palette.panel_bg)
+                .bg(app.palette.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .alignment(Alignment::Right),
+        rows[0],
+    );
+
+    let body_area = rows[3];
+    let metrics = crate::pane::ScrollMetrics {
+        offset_from_bottom: app.release_notes_max_scroll().saturating_sub(notes.scroll) as usize,
+        max_offset_from_bottom: app.release_notes_max_scroll() as usize,
+        viewport_rows: body_area.height.max(1) as usize,
+    };
+    let track = release_notes_scrollbar_rect(body_area, metrics);
+    let text_area = track
+        .map(|_| {
+            Rect::new(
+                body_area.x,
+                body_area.y,
+                body_area.width.saturating_sub(1),
+                body_area.height,
+            )
+        })
+        .unwrap_or(body_area);
+
+    let body = Paragraph::new(render_release_notes_lines(
+        notes.body.as_str(),
+        &app.palette,
+    ))
+    .wrap(Wrap { trim: false })
+    .scroll((notes.scroll, 0));
+    frame.render_widget(body, text_area);
+    if let Some(track) = track {
+        render_scrollbar(
+            frame,
+            metrics,
+            track,
+            app.palette.overlay0,
+            app.palette.overlay1,
+            "▐",
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" scroll ", Style::default().fg(app.palette.overlay0)),
+            Span::styled("wheel ↑↓", Style::default().fg(app.palette.text)),
+            Span::styled("  ·  ", Style::default().fg(app.palette.overlay0)),
+            Span::styled("close", Style::default().fg(app.palette.overlay0)),
+            Span::styled(" q / esc / enter ", Style::default().fg(app.palette.text)),
+        ])),
+        rows[4],
+    );
+}
+
+fn render_release_notes_lines<'a>(body: &'a str, p: &Palette) -> Vec<Line<'a>> {
+    let mut lines = Vec::new();
+
+    for raw in body.lines() {
+        let trimmed = raw.trim_end();
+        if trimmed.is_empty() {
+            lines.push(Line::raw(""));
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("### ") {
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    rest.to_lowercase(),
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("- ") {
+            lines.push(Line::from(vec![
+                Span::styled(" • ", Style::default().fg(p.accent)),
+                Span::styled(rest.to_string(), Style::default().fg(p.text)),
+            ]));
+            continue;
+        }
+
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(trimmed.to_string(), Style::default().fg(p.text)),
+        ]));
+    }
+
+    lines
 }
 
 fn render_onboarding_welcome(app: &AppState, frame: &mut Frame, area: Rect) {

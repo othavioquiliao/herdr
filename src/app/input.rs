@@ -40,6 +40,7 @@ impl App {
                 let key = key.as_key_event();
                 match self.state.mode {
                     Mode::Onboarding => self.handle_onboarding_key(key),
+                    Mode::ReleaseNotes => self.handle_release_notes_key(key),
                     Mode::Navigate => handle_navigate_key(&mut self.state, key),
                     Mode::RenameSession => handle_rename_key(&mut self.state, key),
                     Mode::Resize => handle_resize_key(&mut self.state, key),
@@ -107,6 +108,28 @@ impl App {
         }
     }
 
+    fn handle_release_notes_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => self.dismiss_release_notes(),
+            KeyCode::Up | KeyCode::Char('k') => self.scroll_release_notes(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll_release_notes(1),
+            KeyCode::PageUp => self.scroll_release_notes(-8),
+            KeyCode::PageDown => self.scroll_release_notes(8),
+            KeyCode::Home => {
+                if let Some(notes) = &mut self.state.release_notes {
+                    notes.scroll = 0;
+                }
+            }
+            KeyCode::End => {
+                let max_scroll = self.state.release_notes_max_scroll();
+                if let Some(notes) = &mut self.state.release_notes {
+                    notes.scroll = max_scroll;
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn handle_settings_key(&mut self, key: KeyEvent) {
         if let Some(action) = update_settings_state(&mut self.state, key) {
             match action {
@@ -118,6 +141,57 @@ impl App {
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.state.mode == Mode::ReleaseNotes {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left)
+                    if self
+                        .state
+                        .release_notes_close_button_at(mouse.column, mouse.row) =>
+                {
+                    self.dismiss_release_notes();
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(target) = self
+                        .state
+                        .release_notes_scrollbar_target_at(mouse.column, mouse.row)
+                    {
+                        match target {
+                            ScrollbarClickTarget::Thumb { grab_row_offset } => {
+                                self.state.drag = Some(DragState {
+                                    target: DragTarget::ReleaseNotesScrollbar { grab_row_offset },
+                                });
+                            }
+                            ScrollbarClickTarget::Track { offset_from_bottom } => {
+                                self.state
+                                    .set_release_notes_offset_from_bottom(offset_from_bottom);
+                            }
+                        }
+                    }
+                }
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    if let Some(DragState {
+                        target: DragTarget::ReleaseNotesScrollbar { grab_row_offset },
+                    }) = &self.state.drag
+                    {
+                        if let Some(offset_from_bottom) = self
+                            .state
+                            .release_notes_offset_for_drag_row(mouse.row, *grab_row_offset)
+                        {
+                            self.state
+                                .set_release_notes_offset_from_bottom(offset_from_bottom);
+                        }
+                    }
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.state.drag = None;
+                }
+                MouseEventKind::ScrollUp => self.scroll_release_notes(-3),
+                MouseEventKind::ScrollDown => self.scroll_release_notes(3),
+                _ => {}
+            }
+            return;
+        }
+
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && self.state.on_sidebar_divider(mouse.column, mouse.row)
         {
@@ -667,6 +741,108 @@ impl AppState {
         Some(block.inner(popup))
     }
 
+    fn release_notes_modal_inner(&self) -> Option<ratatui::layout::Rect> {
+        self.onboarding_modal_inner(76, 20)
+    }
+
+    fn release_notes_close_button_at(&self, col: u16, row: u16) -> bool {
+        let Some(inner) = self.release_notes_modal_inner() else {
+            return false;
+        };
+        if inner.height < 4 || inner.width < 12 {
+            return false;
+        }
+        let button =
+            ratatui::layout::Rect::new(inner.x + inner.width.saturating_sub(11), inner.y, 9, 1);
+        col >= button.x
+            && col < button.x + button.width
+            && row >= button.y
+            && row < button.y + button.height
+    }
+
+    fn release_notes_body_rect(&self) -> Option<Rect> {
+        let inner = self.release_notes_modal_inner()?;
+        if inner.height < 8 || inner.width < 4 {
+            return None;
+        }
+        let rows = ratatui::layout::Layout::vertical([
+            ratatui::layout::Constraint::Length(1),
+            ratatui::layout::Constraint::Length(1),
+            ratatui::layout::Constraint::Length(1),
+            ratatui::layout::Constraint::Min(1),
+            ratatui::layout::Constraint::Length(1),
+        ])
+        .areas::<5>(inner);
+        Some(rows[3])
+    }
+
+    fn release_notes_scroll_metrics(&self) -> Option<crate::pane::ScrollMetrics> {
+        let notes = self.release_notes.as_ref()?;
+        let body = self.release_notes_body_rect()?;
+        let viewport_rows = body.height.max(1) as usize;
+        let wrap_width = body.width.max(1) as usize;
+        let total_rows = notes
+            .body
+            .lines()
+            .map(|line| line.chars().count().max(1).div_ceil(wrap_width))
+            .sum::<usize>();
+        let max_offset_from_bottom = total_rows.saturating_sub(viewport_rows);
+        Some(crate::pane::ScrollMetrics {
+            offset_from_bottom: max_offset_from_bottom.saturating_sub(notes.scroll as usize),
+            max_offset_from_bottom,
+            viewport_rows,
+        })
+    }
+
+    pub(crate) fn release_notes_max_scroll(&self) -> u16 {
+        self.release_notes_scroll_metrics()
+            .map(|metrics| metrics.max_offset_from_bottom as u16)
+            .unwrap_or(0)
+    }
+
+    fn release_notes_scrollbar_target_at(
+        &self,
+        col: u16,
+        row: u16,
+    ) -> Option<ScrollbarClickTarget> {
+        let body = self.release_notes_body_rect()?;
+        let metrics = self.release_notes_scroll_metrics()?;
+        let track = crate::ui::release_notes_scrollbar_rect(body, metrics)?;
+        if !(col >= track.x
+            && col < track.x + track.width
+            && row >= track.y
+            && row < track.y + track.height)
+        {
+            return None;
+        }
+        if let Some(grab_row_offset) = crate::ui::scrollbar_thumb_grab_offset(metrics, track, row) {
+            Some(ScrollbarClickTarget::Thumb { grab_row_offset })
+        } else {
+            Some(ScrollbarClickTarget::Track {
+                offset_from_bottom: crate::ui::scrollbar_offset_from_row(metrics, track, row),
+            })
+        }
+    }
+
+    fn release_notes_offset_for_drag_row(&self, row: u16, grab_row_offset: u16) -> Option<usize> {
+        let body = self.release_notes_body_rect()?;
+        let metrics = self.release_notes_scroll_metrics()?;
+        let track = crate::ui::release_notes_scrollbar_rect(body, metrics)?;
+        Some(crate::ui::scrollbar_offset_from_drag_row(
+            metrics,
+            track,
+            row,
+            grab_row_offset,
+        ))
+    }
+
+    fn set_release_notes_offset_from_bottom(&mut self, offset_from_bottom: usize) {
+        let max_scroll = self.release_notes_max_scroll() as usize;
+        if let Some(notes) = &mut self.release_notes {
+            notes.scroll = max_scroll.saturating_sub(offset_from_bottom) as u16;
+        }
+    }
+
     fn handle_onboarding_mouse(&mut self, mouse: MouseEvent) {
         if !matches!(
             mouse.kind,
@@ -1060,6 +1236,7 @@ impl AppState {
                             self.sidebar_width_auto = false;
                             self.set_manual_sidebar_width(mouse.column);
                         }
+                        DragTarget::ReleaseNotesScrollbar { .. } => {}
                     }
                 } else if let Some(sel) = &mut self.selection {
                     sel.drag(mouse.column, mouse.row);
@@ -1536,6 +1713,7 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             true,
+            None,
             None,
             api_rx,
             crate::api::EventHub::default(),

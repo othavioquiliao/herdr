@@ -132,6 +132,7 @@ impl App {
         config: &Config,
         no_session: bool,
         config_diagnostic: Option<String>,
+        startup_release_notes: Option<crate::release_notes::ReleaseNotes>,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
         event_hub: crate::api::EventHub,
     ) -> Self {
@@ -167,6 +168,8 @@ impl App {
 
         let mode = if config.should_show_onboarding() {
             state::Mode::Onboarding
+        } else if startup_release_notes.is_some() {
+            state::Mode::ReleaseNotes
         } else if active.is_some() {
             state::Mode::Terminal
         } else {
@@ -184,6 +187,12 @@ impl App {
             name_input: String::new(),
             onboarding_step: 0,
             onboarding_selected: 1,
+            release_notes: startup_release_notes.map(|notes| state::ReleaseNotesState {
+                version: notes.version,
+                body: notes.body,
+                scroll: 0,
+                preview: notes.preview,
+            }),
             view: state::ViewState {
                 sidebar_rect: Rect::default(),
                 terminal_area: Rect::default(),
@@ -1212,6 +1221,41 @@ impl App {
         };
 
         serde_json::to_string(&response).unwrap()
+    }
+
+    pub(crate) fn dismiss_release_notes(&mut self) {
+        let preview = self
+            .state
+            .release_notes
+            .as_ref()
+            .is_some_and(|notes| notes.preview);
+
+        self.state.release_notes = None;
+        if !preview {
+            if let Err(err) = crate::release_notes::clear_pending() {
+                self.state.config_diagnostic =
+                    Some(format!("failed to clear release notes: {err}"));
+                self.config_diagnostic_deadline = Some(Instant::now() + Duration::from_secs(5));
+            }
+        }
+
+        self.state.mode = if self.state.active.is_some() {
+            Mode::Terminal
+        } else {
+            Mode::Navigate
+        };
+    }
+
+    pub(crate) fn scroll_release_notes(&mut self, delta: i16) {
+        let max_scroll = self.state.release_notes_max_scroll();
+        if let Some(notes) = &mut self.state.release_notes {
+            notes.scroll = if delta.is_negative() {
+                notes.scroll.saturating_sub(delta.unsigned_abs())
+            } else {
+                notes.scroll.saturating_add(delta as u16)
+            }
+            .min(max_scroll);
+        }
     }
 
     pub(crate) fn complete_onboarding(&mut self) {

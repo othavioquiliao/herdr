@@ -416,52 +416,28 @@ impl PaneRuntime {
                         last_process_check = now;
                         let pid = child_pid.load(Ordering::Acquire);
                         if pid > 0 {
-                            match detect::foreground_job(pid) {
-                                Some(job) => {
-                                    let identified = detect::identify_agent_in_job(&job);
-                                    let new_agent = identified.as_ref().map(|(agent, _)| *agent);
-
-                                    debug!(
-                                        pane = pane_id.raw(),
-                                        pid,
-                                        previous_agent = ?agent,
-                                        ?new_agent,
-                                        identified_process = identified
-                                            .as_ref()
-                                            .map(|(_, name)| name.as_str()),
-                                        pgid = job.process_group_id,
-                                        processes = ?job.processes,
-                                        "foreground job probe"
-                                    );
-
-                                    if new_agent != agent {
-                                        if let Some((_, process_name)) = identified {
-                                            info!(
-                                                pane = pane_id.raw(),
-                                                ?new_agent,
-                                                process = %process_name,
-                                                pgid = job.process_group_id,
-                                                "agent changed"
-                                            );
-                                        } else {
-                                            info!(
-                                                pane = pane_id.raw(),
-                                                ?new_agent,
-                                                pgid = job.process_group_id,
-                                                "agent changed"
-                                            );
-                                        }
-                                        agent = new_agent;
-                                        agent_changed = true;
+                            if let Some(job) = detect::foreground_job(pid) {
+                                let identified = detect::identify_agent_in_job(&job);
+                                let new_agent = identified.as_ref().map(|(agent, _)| *agent);
+                                if new_agent != agent {
+                                    if let Some((_, process_name)) = identified {
+                                        info!(
+                                            pane = pane_id.raw(),
+                                            ?new_agent,
+                                            process = %process_name,
+                                            pgid = job.process_group_id,
+                                            "agent changed"
+                                        );
+                                    } else {
+                                        info!(
+                                            pane = pane_id.raw(),
+                                            ?new_agent,
+                                            pgid = job.process_group_id,
+                                            "agent changed"
+                                        );
                                     }
-                                }
-                                None => {
-                                    debug!(
-                                        pane = pane_id.raw(),
-                                        pid,
-                                        previous_agent = ?agent,
-                                        "foreground job probe returned none"
-                                    );
+                                    agent = new_agent;
+                                    agent_changed = true;
                                 }
                             }
                         }

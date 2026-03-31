@@ -31,6 +31,7 @@ mod persist;
 mod platform;
 mod pty_callbacks;
 mod raw_input;
+mod release_notes;
 mod selection;
 mod sound;
 mod ui;
@@ -197,6 +198,7 @@ fn main() -> io::Result<()> {
         println!("  --no-session        Don't restore or save sessions");
         println!("  --default-config    Print default configuration and exit");
         println!("  --version, -V       Print version and exit");
+        println!("  --show-changelog    Preview the current version's release notes");
         println!("  --help, -h          Show this help");
         println!();
         println!("Config: ~/.config/herdr/config.toml");
@@ -221,6 +223,7 @@ fn main() -> io::Result<()> {
         "--version",
         "-V",
         "--default-config",
+        "--show-changelog",
         "--help",
         "-h",
     ];
@@ -254,6 +257,7 @@ fn main() -> io::Result<()> {
     let _api_server = api::start_server(api_tx, event_hub.clone())?;
 
     let no_session = std::env::args().any(|a| a == "--no-session");
+    let show_changelog = std::env::args().any(|a| a == "--show-changelog");
     let in_tmux = std::env::var("TMUX").is_ok();
 
     let original_hook = std::panic::take_hook();
@@ -319,7 +323,20 @@ fn main() -> io::Result<()> {
             std::io::stdout().flush()?;
         }
 
-        let mut app = app::App::new(config, no_session, config_diagnostic, api_rx, event_hub);
+        let startup_release_notes = if show_changelog {
+            crate::release_notes::load_preview_from_local_changelog(env!("CARGO_PKG_VERSION"))
+        } else {
+            crate::release_notes::load_pending_for_current_version()
+        };
+
+        let mut app = app::App::new(
+            config,
+            no_session,
+            config_diagnostic,
+            startup_release_notes,
+            api_rx,
+            event_hub,
+        );
         let result = app.run(&mut terminal).await;
 
         // Reset modifyOtherKeys if we enabled it

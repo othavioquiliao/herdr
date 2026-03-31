@@ -104,54 +104,72 @@ fn spawn_herdr_with_path(
     }
 }
 
-fn send_request(socket_path: &Path, json: &str) -> serde_json::Value {
-    let mut stream = UnixStream::connect(socket_path).unwrap();
-    stream.write_all(json.as_bytes()).unwrap();
-    stream.write_all(b"\n").unwrap();
-    stream.flush().unwrap();
-    read_json_line(&mut stream, Duration::from_secs(5))
+struct JsonLineReader {
+    stream: UnixStream,
+    buf: Vec<u8>,
 }
 
-fn open_subscription(socket_path: &Path, json: &str) -> UnixStream {
-    let mut stream = UnixStream::connect(socket_path).unwrap();
-    stream.write_all(json.as_bytes()).unwrap();
-    stream.write_all(b"\n").unwrap();
-    stream.flush().unwrap();
-    stream
-}
+impl JsonLineReader {
+    fn connect(socket_path: &Path) -> Self {
+        Self {
+            stream: UnixStream::connect(socket_path).unwrap(),
+            buf: Vec::new(),
+        }
+    }
 
-fn read_json_line(stream: &mut UnixStream, timeout: Duration) -> serde_json::Value {
-    let deadline = Instant::now() + timeout;
-    let mut buf = Vec::new();
-    stream.set_nonblocking(true).unwrap();
+    fn send_line(&mut self, json: &str) {
+        self.stream.write_all(json.as_bytes()).unwrap();
+        self.stream.write_all(b"\n").unwrap();
+        self.stream.flush().unwrap();
+    }
 
-    loop {
-        assert!(Instant::now() < deadline, "timed out waiting for json line");
+    fn read_json_line(&mut self, timeout: Duration) -> serde_json::Value {
+        let deadline = Instant::now() + timeout;
+        self.stream.set_nonblocking(true).unwrap();
 
-        let mut bytes = [0u8; 256];
-        match stream.read(&mut bytes) {
-            Ok(0) => panic!("stream closed while waiting for json line"),
-            Ok(n) => {
-                buf.extend_from_slice(&bytes[..n]);
-                if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-                    let line = String::from_utf8(buf[..=pos].to_vec()).unwrap();
-                    stream.set_nonblocking(false).unwrap();
-                    return serde_json::from_str(&line).unwrap();
+        loop {
+            assert!(Instant::now() < deadline, "timed out waiting for json line");
+
+            if let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
+                let line = String::from_utf8(self.buf.drain(..=pos).collect()).unwrap();
+                self.stream.set_nonblocking(false).unwrap();
+                return serde_json::from_str(&line).unwrap();
+            }
+
+            let mut bytes = [0u8; 256];
+            match self.stream.read(&mut bytes) {
+                Ok(0) => panic!("stream closed while waiting for json line"),
+                Ok(n) => self.buf.extend_from_slice(&bytes[..n]),
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
                 }
+                Err(err) => panic!("failed to read json line: {err}"),
             }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) => panic!("failed to read json line: {err}"),
         }
     }
 }
 
-fn wait_for_event(reader: &mut UnixStream, expected: &str, timeout: Duration) -> serde_json::Value {
+fn send_request(socket_path: &Path, json: &str) -> serde_json::Value {
+    let mut reader = JsonLineReader::connect(socket_path);
+    reader.send_line(json);
+    reader.read_json_line(Duration::from_secs(5))
+}
+
+fn open_subscription(socket_path: &Path, json: &str) -> JsonLineReader {
+    let mut reader = JsonLineReader::connect(socket_path);
+    reader.send_line(json);
+    reader
+}
+
+fn wait_for_event(
+    reader: &mut JsonLineReader,
+    expected: &str,
+    timeout: Duration,
+) -> serde_json::Value {
     let deadline = Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let value = read_json_line(reader, remaining.max(Duration::from_millis(1)));
+        let value = reader.read_json_line(remaining.max(Duration::from_millis(1)));
         if value["event"] == expected {
             return value;
         }
@@ -367,7 +385,7 @@ fn events_subscribe_streams_lifecycle_and_agent_events() {
         r#"{"id":"sub_life","method":"events.subscribe","params":{"subscriptions":[{"type":"workspace.created"},{"type":"workspace.focused"},{"type":"pane.created"},{"type":"pane.focused"},{"type":"pane.agent_detected"},{"type":"pane.closed"},{"type":"workspace.closed"}]}}"#,
     );
 
-    let ack = read_json_line(&mut reader, Duration::from_secs(2));
+    let ack = reader.read_json_line(Duration::from_secs(2));
     assert_eq!(ack["id"], "sub_life");
     assert_eq!(ack["result"]["type"], "subscription_started");
 
@@ -521,7 +539,7 @@ fn events_subscribe_streams_output_and_agent_state_events() {
         ),
     );
 
-    let ack = read_json_line(&mut reader, Duration::from_secs(2));
+    let ack = reader.read_json_line(Duration::from_secs(2));
     assert_eq!(ack["id"], "sub_1");
     assert_eq!(ack["result"]["type"], "subscription_started");
 
@@ -542,7 +560,7 @@ fn events_subscribe_streams_output_and_agent_state_events() {
     );
     assert_eq!(send_enter["result"]["type"], "ok");
 
-    let output_event = read_json_line(&mut reader, Duration::from_secs(3));
+    let output_event = reader.read_json_line(Duration::from_secs(3));
     assert_eq!(output_event["event"], "pane.output_matched");
     assert_eq!(output_event["data"]["pane_id"], pane_id);
     assert!(output_event["data"]["matched_line"]
@@ -571,7 +589,7 @@ fn events_subscribe_streams_output_and_agent_state_events() {
     );
     assert_eq!(send_enter["result"]["type"], "ok");
 
-    let agent_idle = read_json_line(&mut reader, Duration::from_secs(8));
+    let agent_idle = reader.read_json_line(Duration::from_secs(8));
     assert_eq!(agent_idle["event"], "pane.agent_state_changed");
     assert_eq!(agent_idle["data"]["pane_id"], pane_id);
     assert_eq!(agent_idle["data"]["state"], "idle");

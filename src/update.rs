@@ -58,6 +58,8 @@ impl std::fmt::Display for Version {
 #[derive(Deserialize)]
 struct GitHubRelease {
     tag_name: String,
+    #[serde(default)]
+    body: String,
     assets: Vec<GitHubAsset>,
 }
 
@@ -75,6 +77,7 @@ struct GitHubAsset {
 struct ReleaseInfo {
     version: Version,
     download_url: String,
+    notes_body: String,
 }
 
 /// Check GitHub for the latest release. Returns release info if newer.
@@ -124,6 +127,7 @@ fn check_latest() -> Result<Option<ReleaseInfo>, String> {
     Ok(Some(ReleaseInfo {
         version: latest,
         download_url,
+        notes_body: release.body.trim().to_string(),
     }))
 }
 
@@ -205,6 +209,11 @@ pub fn self_update() -> Result<Version, String> {
     };
 
     eprintln!("downloading v{}...", release.version);
+    if let Err(e) =
+        crate::release_notes::save_pending(&release.version.to_string(), &release.notes_body)
+    {
+        tracing::warn!("failed to save pending release notes: {e}");
+    }
     download_and_install(&release)?;
     eprintln!("updated to v{}", release.version);
 
@@ -239,6 +248,12 @@ pub fn auto_update(events: tokio::sync::mpsc::Sender<crate::events::AppEvent>) {
         release.version,
         release.download_url
     );
+
+    if let Err(e) =
+        crate::release_notes::save_pending(&release.version.to_string(), &release.notes_body)
+    {
+        tracing::warn!("failed to save pending release notes: {e}");
+    }
 
     if let Err(e) = download_and_install(&release) {
         tracing::warn!("auto-update failed: {e}");
