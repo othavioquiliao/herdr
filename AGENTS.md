@@ -37,4 +37,13 @@ Integration tests are markdown specs in `tests/integration/specs/`. A pi agent e
 
 ## Releases
 
-`just release 0.x.y` — bumps Cargo.toml, runs tests, commits, tags, pushes. GitHub Actions builds binaries.
+Before cutting a release, draft the upcoming notes under `## Unreleased` in `CHANGELOG.md`. The release script promotes that section into the versioned entry.
+
+Default release flow:
+
+```bash
+just check
+just release 0.x.y
+```
+
+`just release 0.x.y` prepares the changelog entry, bumps `Cargo.toml`, runs tests, commits, tags, and pushes. GitHub Actions builds the binaries after the tag is pushed.
