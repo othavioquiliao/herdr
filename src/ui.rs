@@ -313,7 +313,11 @@ fn compute_sidebar_width(app: &AppState) -> u16 {
         .workspaces
         .iter()
         .flat_map(|ws| ws.pane_details().into_iter())
-        .map(|detail| 3 + detail.label.len() + 1 + state_label(detail.state, detail.seen).len())
+        .map(|detail| {
+            let name_line = 3 + detail.label.len(); // " icon name"
+            let state_line = 2 + state_label(detail.state, detail.seen).len(); // "  state"
+            name_line.max(state_line)
+        })
         .max()
         .unwrap_or(0);
     ((max_workspace_line.max(max_agent_line) as u16) + 2)
@@ -642,7 +646,7 @@ fn render_agent_detail(
     // Per-pane agent entries, sorted by urgency
     let details = ws.pane_details();
     for detail in &details {
-        if row_y >= area.y + area.height {
+        if row_y + 1 >= area.y + area.height {
             break;
         }
 
@@ -650,32 +654,38 @@ fn render_agent_detail(
         let label_color = state_label_color(detail.state, detail.seen, p);
         let label = state_label(detail.state, detail.seen);
 
-        // Agent name in soft white, state label right-aligned in its color
         let name_style = Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD);
+        let status_style = Style::default().fg(label_color).add_modifier(Modifier::DIM);
 
-        // Calculate padding to right-align state label
-        let used = 3 + detail.label.len() + 1; // " icon name "
-        let label_len = label.len();
-        let avail = (area.width as usize).saturating_sub(used + label_len);
-        let padding = " ".repeat(avail);
-
-        let line = Line::from(vec![
+        let name_line = Line::from(vec![
             Span::styled(" ", Style::default()),
             Span::styled(icon, icon_style),
             Span::styled(" ", Style::default()),
             Span::styled(&detail.label, name_style),
-            Span::styled(padding, Style::default()),
-            Span::styled(
-                label,
-                Style::default().fg(label_color).add_modifier(Modifier::DIM),
-            ),
         ]);
-
         frame.render_widget(
-            Paragraph::new(line),
+            Paragraph::new(name_line),
             Rect::new(area.x, row_y, area.width, 1),
         );
         row_y += 1;
+
+        if row_y >= area.y + area.height {
+            break;
+        }
+
+        let status_line = Line::from(vec![
+            Span::styled("   ", Style::default()),
+            Span::styled(label, status_style),
+        ]);
+        frame.render_widget(
+            Paragraph::new(status_line),
+            Rect::new(area.x, row_y, area.width, 1),
+        );
+        row_y += 1;
+
+        if row_y < area.y + area.height {
+            row_y += 1;
+        }
     }
 }
 

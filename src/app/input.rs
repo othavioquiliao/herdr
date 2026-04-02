@@ -2153,7 +2153,12 @@ impl AppState {
         };
 
         let ws = self.workspaces.get(detail_ws_idx)?;
-        let detail_idx = (row - (detail_area.y + 3)) as usize;
+        let relative_row = row - (detail_area.y + 3);
+        let entry_height = 3;
+        if relative_row % entry_height == 2 {
+            return None;
+        }
+        let detail_idx = (relative_row / entry_height) as usize;
         let details = ws.pane_details();
         let detail = details.get(detail_idx)?;
         Some((detail_ws_idx, detail.tab_idx, detail.pane_id))
@@ -3004,7 +3009,7 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
 
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 14));
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 16));
 
         assert_eq!(app.state.workspaces[0].active_tab, 1);
         assert_eq!(
