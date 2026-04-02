@@ -76,6 +76,10 @@ fn flush_incomplete_buffer(buffer: &mut Vec<u8>, tx: &mpsc::Sender<RawInputEvent
     }
 
     if buffer.as_slice() == [ESC] {
+        tracing::warn!(
+            bytes = ?buffer,
+            "flushing lone escape after input timeout; if this follows an alt chord or focus switch it may reach the pane as plain esc"
+        );
         let _ = tx.blocking_send(RawInputEvent::Key(TerminalKey::new(
             crossterm::event::KeyCode::Esc,
             KeyModifiers::empty(),

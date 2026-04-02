@@ -192,11 +192,15 @@ impl Tab {
                 let agent = pane.and_then(|p| p.detected_agent);
                 let state = pane.map(|p| p.state).unwrap_or(AgentState::Unknown);
                 let seen = pane.map(|p| p.seen).unwrap_or(true);
-                let label = agent
+                let agent_label = agent
                     .map(|a| agent_name(a).to_string())
                     .unwrap_or_else(|| "shell".to_string());
                 PaneDetail {
-                    label,
+                    pane_id: *id,
+                    tab_idx: self.number.saturating_sub(1),
+                    tab_label: self.display_name(),
+                    label: agent_label.clone(),
+                    agent_label,
                     agent,
                     state,
                     seen,
@@ -442,7 +446,17 @@ impl Workspace {
     }
 
     pub fn pane_details(&self) -> Vec<PaneDetail> {
-        self.active_tab().map(Tab::pane_details).unwrap_or_default()
+        let multi_tab = self.tabs.len() > 1;
+        self.tabs
+            .iter()
+            .flat_map(Tab::pane_details)
+            .map(|mut detail| {
+                if multi_tab {
+                    detail.label = format!("{} / {}", detail.tab_label, detail.agent_label);
+                }
+                detail
+            })
+            .collect()
     }
 
     pub fn focused_runtime(&self) -> Option<&PaneRuntime> {
@@ -532,7 +546,11 @@ impl Workspace {
 
 /// Detail info for a single pane, used by the agent detail panel.
 pub struct PaneDetail {
+    pub pane_id: PaneId,
+    pub tab_idx: usize,
+    pub tab_label: String,
     pub label: String,
+    pub agent_label: String,
     #[allow(dead_code)]
     pub agent: Option<Agent>,
     pub state: AgentState,
@@ -680,12 +698,36 @@ impl Workspace {
         self.register_new_pane(new_id);
         new_id
     }
+
+    pub fn test_add_tab(&mut self, name: Option<&str>) -> usize {
+        let (events, _) = mpsc::channel(64);
+        let render_notify = Arc::new(Notify::new());
+        let render_dirty = Arc::new(AtomicBool::new(false));
+        let (layout, root_id) = TileLayout::new();
+        let mut panes = HashMap::new();
+        panes.insert(root_id, PaneState::new());
+        let tab = Tab {
+            custom_name: name.map(str::to_string),
+            number: self.tabs.len() + 1,
+            root_pane: root_id,
+            layout,
+            panes,
+            runtimes: HashMap::new(),
+            zoomed: false,
+            events,
+            render_notify,
+            render_dirty,
+        };
+        self.register_new_pane(root_id);
+        self.tabs.push(tab);
+        self.tabs.len() - 1
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detect::AgentState;
+    use crate::detect::{Agent, AgentState};
 
     #[test]
     fn aggregate_state_all_unknown() {
@@ -731,5 +773,30 @@ mod tests {
         let (state, seen) = ws.aggregate_state();
         assert_eq!(state, AgentState::Idle);
         assert!(!seen);
+    }
+
+    #[test]
+    fn pane_details_include_tab_context_when_workspace_has_multiple_tabs() {
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("main".into());
+        let root_pane = ws.tabs[0].root_pane;
+        ws.tabs[0]
+            .panes
+            .get_mut(&root_pane)
+            .unwrap()
+            .detected_agent = Some(Agent::Pi);
+
+        let tab_idx = ws.test_add_tab(Some("logs"));
+        let second_root_pane = ws.tabs[tab_idx].root_pane;
+        ws.tabs[tab_idx]
+            .panes
+            .get_mut(&second_root_pane)
+            .unwrap()
+            .detected_agent = Some(Agent::Claude);
+
+        let details = ws.pane_details();
+        assert_eq!(details.len(), 2);
+        assert!(details.iter().any(|detail| detail.label == "main / pi"));
+        assert!(details.iter().any(|detail| detail.label == "logs / claude"));
     }
 }

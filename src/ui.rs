@@ -294,7 +294,7 @@ fn compute_sidebar_width(app: &AppState) -> u16 {
             .sidebar_width
             .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
     }
-    let max_line = app
+    let max_workspace_line = app
         .workspaces
         .iter()
         .enumerate()
@@ -309,7 +309,14 @@ fn compute_sidebar_width(app: &AppState) -> u16 {
         })
         .max()
         .unwrap_or(12);
-    ((max_line as u16) + 2).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
+    let max_agent_line = app
+        .workspaces
+        .iter()
+        .flat_map(|ws| ws.pane_details().into_iter())
+        .map(|detail| 3 + detail.label.len() + 1 + state_label(detail.state, detail.seen).len())
+        .max()
+        .unwrap_or(0);
+    ((max_workspace_line.max(max_agent_line) as u16) + 2).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
 }
 
 /// Collapsed sidebar: pure glance mode.

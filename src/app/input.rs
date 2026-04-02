@@ -5,7 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKin
 
 use crate::input::TerminalKey;
 use ratatui::layout::{Direction, Rect};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::layout::{NavDirection, PaneInfo, SplitBorder};
 use crate::selection::Selection;
@@ -32,6 +32,10 @@ use super::App;
 // ---------------------------------------------------------------------------
 // Key handling
 // ---------------------------------------------------------------------------
+
+fn is_modifier_only_key(code: &KeyCode) -> bool {
+    matches!(code, KeyCode::Modifier(_))
+}
 
 fn terminal_direct_navigation_action(state: &AppState, key: &KeyEvent) -> Option<NavigateAction> {
     let kb = &state.keybinds;
@@ -344,6 +348,13 @@ impl App {
         let key_event = key.as_key_event();
 
         if let Some(action) = terminal_direct_navigation_action(&self.state, &key_event) {
+            debug!(
+                code = ?key_event.code,
+                modifiers = ?key_event.modifiers,
+                kind = ?key_event.kind,
+                action = ?action,
+                "intercepted terminal direct navigation key before forwarding to pane"
+            );
             execute_navigate_action(&mut self.state, action);
             return;
         }
@@ -353,16 +364,36 @@ impl App {
             return;
         }
 
+        if is_modifier_only_key(&key_event.code) {
+            debug!(
+                code = ?key_event.code,
+                modifiers = ?key_event.modifiers,
+                kind = ?key_event.kind,
+                "dropping modifier-only terminal key event instead of forwarding it to pane"
+            );
+            return;
+        }
+
         if let Some(ws) = self.state.active.and_then(|i| self.state.workspaces.get(i)) {
             if let Some(rt) = ws.focused_runtime() {
                 rt.scroll_reset();
                 let flags = rt
                     .kitty_keyboard_flags
                     .load(std::sync::atomic::Ordering::Relaxed);
-                let bytes = crate::input::encode_terminal_key(
-                    key,
-                    crate::input::KeyboardProtocol::from_kitty_flags(flags),
-                );
+                let protocol = crate::input::KeyboardProtocol::from_kitty_flags(flags);
+                let bytes = crate::input::encode_terminal_key(key, protocol);
+                if matches!(key_event.code, KeyCode::Esc)
+                    || key_event.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+                {
+                    debug!(
+                        code = ?key_event.code,
+                        modifiers = ?key_event.modifiers,
+                        kind = ?key_event.kind,
+                        protocol = ?protocol,
+                        encoded = ?bytes,
+                        "forwarding potentially-ambiguous terminal key to pane"
+                    );
+                }
                 if bytes.is_empty() {
                     if key.kind != crossterm::event::KeyEventKind::Release
                         && !matches!(
@@ -1831,6 +1862,16 @@ impl AppState {
                         self.mode = Mode::Terminal;
                         return None;
                     }
+
+                    if let Some((ws_idx, tab_idx, pane_id)) = self.agent_detail_target_at(mouse.row) {
+                        self.switch_workspace(ws_idx);
+                        if let Some(ws) = self.workspaces.get_mut(ws_idx) {
+                            ws.switch_tab(tab_idx);
+                            ws.layout.focus_pane(pane_id);
+                        }
+                        self.mode = Mode::Terminal;
+                        return None;
+                    }
                 } else if let Some(info) = self.pane_at(mouse.column, mouse.row).cloned() {
                     let (row, col) = (
                         mouse.row - info.inner_rect.y,
@@ -2060,6 +2101,59 @@ impl AppState {
             }
         }
         None
+    }
+
+    fn agent_detail_target_at(
+        &self,
+        row: u16,
+    ) -> Option<(usize, usize, crate::layout::PaneId)> {
+        if self.sidebar_collapsed {
+            return None;
+        }
+
+        let content = Rect::new(
+            self.view.sidebar_rect.x,
+            self.view.sidebar_rect.y,
+            self.view.sidebar_rect.width.saturating_sub(1),
+            self.view.sidebar_rect.height,
+        );
+        if content.width == 0 || content.height == 0 {
+            return None;
+        }
+
+        let total_h = content.height as usize;
+        let ws_h = (total_h + 1) / 2;
+        let detail_area = Rect::new(
+            content.x,
+            content.y + ws_h as u16,
+            content.width,
+            total_h.saturating_sub(ws_h) as u16,
+        );
+        if detail_area.height < 4 || row < detail_area.y + 3 || row >= detail_area.y + detail_area.height {
+            return None;
+        }
+
+        let detail_ws_idx = if matches!(
+            self.mode,
+            Mode::Navigate
+                | Mode::RenameWorkspace
+                | Mode::Resize
+                | Mode::ConfirmClose
+                | Mode::ContextMenu
+                | Mode::Settings
+                | Mode::GlobalMenu
+                | Mode::KeybindHelp
+        ) {
+            self.selected
+        } else {
+            self.active?
+        };
+
+        let ws = self.workspaces.get(detail_ws_idx)?;
+        let detail_idx = (row - (detail_area.y + 3)) as usize;
+        let details = ws.pane_details();
+        let detail = details.get(detail_idx)?;
+        Some((detail_ws_idx, detail.tab_idx, detail.pane_id))
     }
 
     fn screen_rect(&self) -> Rect {
@@ -2882,6 +2976,25 @@ mod tests {
 
         assert_eq!(app.state.workspaces.len(), 1);
         assert_eq!(app.state.workspaces[0].display_name(), "a");
+    }
+
+    #[test]
+    fn clicking_agent_detail_row_switches_to_correct_tab_and_pane() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].set_custom_name("main".into());
+        let second_tab = ws.test_add_tab(Some("logs"));
+        let second_pane = ws.tabs[second_tab].root_pane;
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 14));
+
+        assert_eq!(app.state.workspaces[0].active_tab, 1);
+        assert_eq!(app.state.workspaces[0].tabs[1].layout.focused(), second_pane);
+        assert_eq!(app.state.mode, Mode::Terminal);
     }
 
     #[test]
