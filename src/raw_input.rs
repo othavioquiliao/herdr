@@ -53,6 +53,11 @@ fn drain_buffer(buffer: &mut Vec<u8>, tx: &mpsc::Sender<RawInputEvent>) {
         let Some((event, consumed)) = extract_one_event(buffer) else {
             break;
         };
+        tracing::debug!(
+            raw_bytes = ?&buffer[..consumed],
+            event = ?event,
+            "raw input event parsed"
+        );
         buffer.drain(..consumed);
         let _ = tx.blocking_send(event);
     }

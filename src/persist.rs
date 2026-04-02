@@ -19,7 +19,7 @@ use crate::pane::{PaneRuntime, PaneState};
 use crate::workspace::Workspace;
 
 /// Current snapshot format version.
-const SNAPSHOT_VERSION: u32 = 2;
+const SNAPSHOT_VERSION: u32 = 3;
 
 /// Serializable snapshot of the entire herdr session.
 #[derive(Serialize, Deserialize)]
@@ -36,13 +36,21 @@ pub struct SessionSnapshot {
 pub struct WorkspaceSnapshot {
     #[serde(default)]
     pub custom_name: Option<String>,
+    pub identity_cwd: PathBuf,
+    pub tabs: Vec<TabSnapshot>,
+    #[serde(default)]
+    pub active_tab: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TabSnapshot {
+    #[serde(default)]
+    pub custom_name: Option<String>,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
-    /// Raw pane ID that was focused when saved.
     #[serde(default)]
     pub focused: Option<u32>,
-    /// Raw pane ID used as the workspace identity source.
     #[serde(default)]
     pub root_pane: Option<u32>,
 }
@@ -87,22 +95,31 @@ pub fn capture(
 }
 
 fn capture_workspace(ws: &Workspace) -> WorkspaceSnapshot {
+    WorkspaceSnapshot {
+        custom_name: ws.custom_name.clone(),
+        identity_cwd: ws.identity_cwd.clone(),
+        tabs: ws.tabs.iter().map(capture_tab).collect(),
+        active_tab: ws.active_tab,
+    }
+}
+
+fn capture_tab(tab: &crate::workspace::Tab) -> TabSnapshot {
     let mut panes = HashMap::new();
-    for id in ws.panes.keys() {
-        let cwd = ws
+    for id in tab.panes.keys() {
+        let cwd = tab
             .runtimes
             .get(id)
             .and_then(|rt| rt.cwd())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         panes.insert(id.raw(), PaneSnapshot { cwd });
     }
-    WorkspaceSnapshot {
-        custom_name: ws.custom_name.clone(),
-        layout: capture_node(ws.layout.root()),
+    TabSnapshot {
+        custom_name: tab.custom_name.clone(),
+        layout: capture_node(tab.layout.root()),
         panes,
-        zoomed: ws.zoomed,
-        focused: Some(ws.layout.focused().raw()),
-        root_pane: Some(ws.root_pane.raw()),
+        zoomed: tab.zoomed,
+        focused: Some(tab.layout.focused().raw()),
+        root_pane: Some(tab.root_pane.raw()),
     }
 }
 
@@ -161,10 +178,53 @@ fn restore_workspace(
     render_notify: Arc<Notify>,
     render_dirty: Arc<AtomicBool>,
 ) -> Option<Workspace> {
+    let mut tabs = Vec::new();
+    let mut public_pane_numbers = HashMap::new();
+    let mut next_public_pane_number = 1;
+
+    for (idx, tab_snap) in snap.tabs.iter().enumerate() {
+        let tab = restore_tab(
+            tab_snap,
+            idx + 1,
+            rows,
+            cols,
+            events.clone(),
+            render_notify.clone(),
+            render_dirty.clone(),
+        )?;
+        for pane_id in tab.layout.pane_ids() {
+            public_pane_numbers.insert(pane_id, next_public_pane_number);
+            next_public_pane_number += 1;
+        }
+        tabs.push(tab);
+    }
+
+    if tabs.is_empty() {
+        return None;
+    }
+
+    Some(Workspace {
+        custom_name: snap.custom_name.clone(),
+        identity_cwd: snap.identity_cwd.clone(),
+        cached_git_ahead_behind: None,
+        public_pane_numbers,
+        next_public_pane_number,
+        active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
+        tabs,
+    })
+}
+
+fn restore_tab(
+    snap: &TabSnapshot,
+    number: usize,
+    rows: u16,
+    cols: u16,
+    events: mpsc::Sender<AppEvent>,
+    render_notify: Arc<Notify>,
+    render_dirty: Arc<AtomicBool>,
+) -> Option<crate::workspace::Tab> {
     let (node, id_map) = restore_node_remapped(&snap.layout);
     let pane_ids = collect_pane_ids(&node);
-
-    // Restore focused pane: map saved raw ID to new ID, fall back to first pane
     let focus = snap
         .focused
         .and_then(|old_raw| id_map.get(&old_raw).copied())
@@ -198,7 +258,7 @@ fn restore_workspace(
                 runtimes.insert(*id, runtime);
             }
             Err(e) => {
-                error!(workspace = ?snap.custom_name, err = %e, "failed to restore pane");
+                error!(tab = ?snap.custom_name, err = %e, "failed to restore pane");
                 return None;
             }
         }
@@ -210,20 +270,11 @@ fn restore_workspace(
         .or_else(|| pane_ids.first().copied())
         .unwrap_or(PaneId::from_raw(0));
 
-    let public_pane_numbers = layout
-        .pane_ids()
-        .into_iter()
-        .enumerate()
-        .map(|(index, pane_id)| (pane_id, index + 1))
-        .collect();
-
-    Some(Workspace {
+    Some(crate::workspace::Tab {
         custom_name: snap.custom_name.clone(),
+        number,
         root_pane,
         layout,
-        cached_git_ahead_behind: None,
-        public_pane_numbers,
-        next_public_pane_number: panes.len() + 1,
         panes,
         runtimes,
         zoomed: snap.zoomed,
@@ -421,16 +472,21 @@ mod tests {
         let snap = SessionSnapshot {
             workspaces: vec![WorkspaceSnapshot {
                 custom_name: Some("pi-mono".to_string()),
-                layout: LayoutSnapshot::Split {
-                    direction: DirectionSnapshot::Horizontal,
-                    ratio: 0.5,
-                    first: Box::new(LayoutSnapshot::Pane(0)),
-                    second: Box::new(LayoutSnapshot::Pane(1)),
-                },
-                panes,
-                zoomed: false,
-                focused: Some(0),
-                root_pane: Some(0),
+                identity_cwd: PathBuf::from("/home/can/Projects/herdr"),
+                tabs: vec![TabSnapshot {
+                    custom_name: Some("api".to_string()),
+                    layout: LayoutSnapshot::Split {
+                        direction: DirectionSnapshot::Horizontal,
+                        ratio: 0.5,
+                        first: Box::new(LayoutSnapshot::Pane(0)),
+                        second: Box::new(LayoutSnapshot::Pane(1)),
+                    },
+                    panes,
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
             }],
             active: Some(0),
             selected: 0,
@@ -445,9 +501,10 @@ mod tests {
             restored.workspaces[0].custom_name.as_deref(),
             Some("pi-mono")
         );
-        assert_eq!(restored.workspaces[0].panes.len(), 2);
+        assert_eq!(restored.workspaces[0].tabs.len(), 1);
+        assert_eq!(restored.workspaces[0].tabs[0].panes.len(), 2);
         assert_eq!(
-            restored.workspaces[0].panes[&0].cwd,
+            restored.workspaces[0].tabs[0].panes[&0].cwd,
             PathBuf::from("/home/can/Projects/herdr")
         );
     }
@@ -494,9 +551,9 @@ mod tests {
     }
 
     #[test]
-    fn focused_pane_default_is_none() {
-        let json = r#"{"name":"test","layout":{"Pane":0},"panes":{},"zoomed":false}"#;
+    fn active_tab_default_is_zero() {
+        let json = r#"{"custom_name":"test","identity_cwd":"/tmp","tabs":[]}"#;
         let ws: WorkspaceSnapshot = serde_json::from_str(json).unwrap();
-        assert_eq!(ws.focused, None); // #[serde(default)]
+        assert_eq!(ws.active_tab, 0);
     }
 }

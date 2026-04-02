@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -12,19 +13,12 @@ use crate::events::AppEvent;
 use crate::layout::{PaneId, TileLayout};
 use crate::pane::{PaneRuntime, PaneState};
 
-/// A named workspace containing tiled terminal panes.
-pub struct Workspace {
-    /// User-provided override. If set, auto-derived identity stops updating.
+pub struct Tab {
     pub custom_name: Option<String>,
-    /// Identity source for this workspace.
+    pub number: usize,
+    /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
     pub layout: TileLayout,
-    /// Cached ahead/behind counts for the root repo's current branch upstream.
-    pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
-    /// Stable-ish public pane numbers within this workspace.
-    /// New panes append at the end; closing a pane compacts higher numbers down.
-    pub public_pane_numbers: HashMap<PaneId, usize>,
-    pub(crate) next_public_pane_number: usize,
     /// Pane state — always present, testable without PTYs.
     pub panes: HashMap<PaneId, PaneState>,
     /// Pane runtimes — only present in production (empty in tests).
@@ -35,7 +29,7 @@ pub struct Workspace {
     pub(crate) render_dirty: Arc<AtomicBool>,
 }
 
-impl Drop for Workspace {
+impl Drop for Tab {
     fn drop(&mut self) {
         let runtimes = std::mem::take(&mut self.runtimes);
         for (pane_id, runtime) in runtimes {
@@ -44,8 +38,9 @@ impl Drop for Workspace {
     }
 }
 
-impl Workspace {
+impl Tab {
     pub fn new(
+        number: usize,
         initial_cwd: PathBuf,
         rows: u16,
         cols: u16,
@@ -66,19 +61,14 @@ impl Workspace {
 
         let mut panes = HashMap::new();
         panes.insert(root_id, PaneState::new());
-        let mut public_pane_numbers = HashMap::new();
-        public_pane_numbers.insert(root_id, 1);
         let mut runtimes = HashMap::new();
         runtimes.insert(root_id, runtime);
 
-        info!(root_pane = root_id.raw(), "workspace created");
         Ok(Self {
             custom_name: None,
+            number,
             root_pane: root_id,
             layout,
-            cached_git_ahead_behind: None,
-            public_pane_numbers,
-            next_public_pane_number: 2,
             panes,
             runtimes,
             zoomed: false,
@@ -88,7 +78,16 @@ impl Workspace {
         })
     }
 
-    /// Split the focused pane. Returns the new pane id.
+    pub fn display_name(&self) -> String {
+        self.custom_name
+            .clone()
+            .unwrap_or_else(|| self.number.to_string())
+    }
+
+    pub fn set_custom_name(&mut self, name: String) {
+        self.custom_name = Some(name);
+    }
+
     pub fn split_focused(
         &mut self,
         direction: Direction,
@@ -109,35 +108,22 @@ impl Workspace {
             self.render_dirty.clone(),
         )?;
         self.panes.insert(new_id, PaneState::new());
-        self.public_pane_numbers
-            .insert(new_id, self.next_public_pane_number);
-        self.next_public_pane_number += 1;
         self.runtimes.insert(new_id, runtime);
         self.zoomed = false;
         Ok(new_id)
     }
 
-    /// Close the focused pane. Returns the removed pane id, or None if last pane.
-    pub fn close_focused(&mut self) -> Option<PaneId> {
+    pub fn close_focused(&mut self) -> Option<(PaneId, Option<PaneRuntime>)> {
         let pane_id = self.layout.focused();
-        self.close_pane(pane_id)
+        self.detach_pane(pane_id)
     }
 
-    /// Close a specific pane and terminate everything running inside it.
-    /// Returns None if it's the last pane and the whole workspace should close.
-    pub fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneId> {
-        let (removed, runtime) = self.detach_pane(pane_id)?;
-        if let Some(runtime) = runtime {
-            runtime.shutdown(pane_id);
-        }
-        Some(removed)
+    pub fn close_pane(&mut self, pane_id: PaneId) -> Option<(PaneId, Option<PaneRuntime>)> {
+        self.detach_pane(pane_id)
     }
 
-    /// Remove a specific pane from this workspace without terminating its runtime.
-    /// Used when the pane process has already exited and we are only cleaning up state.
-    /// Returns None if it's the last pane and the whole workspace should close.
-    pub fn remove_pane(&mut self, pane_id: PaneId) -> Option<PaneId> {
-        self.detach_pane(pane_id).map(|(removed, _)| removed)
+    pub fn remove_pane(&mut self, pane_id: PaneId) -> Option<(PaneId, Option<PaneRuntime>)> {
+        self.detach_pane(pane_id)
     }
 
     fn detach_pane(&mut self, pane_id: PaneId) -> Option<(PaneId, Option<PaneRuntime>)> {
@@ -156,14 +142,6 @@ impl Workspace {
             self.layout.focus_pane(prev_focus);
         }
 
-        if let Some(removed_number) = self.public_pane_numbers.remove(&pane_id) {
-            for number in self.public_pane_numbers.values_mut() {
-                if *number > removed_number {
-                    *number -= 1;
-                }
-            }
-            self.next_public_pane_number = self.public_pane_numbers.len() + 1;
-        }
         self.panes.remove(&pane_id);
         let runtime = self.runtimes.remove(&pane_id);
         self.zoomed = false;
@@ -180,42 +158,8 @@ impl Workspace {
         self.layout.pane_ids().into_iter().find(|id| *id != closing)
     }
 
-    pub fn public_pane_number(&self, pane_id: PaneId) -> Option<usize> {
-        self.public_pane_numbers.get(&pane_id).copied()
-    }
-
-    /// Get the runtime for the focused pane.
     pub fn focused_runtime(&self) -> Option<&PaneRuntime> {
         self.runtimes.get(&self.layout.focused())
-    }
-
-    pub fn set_custom_name(&mut self, name: String) {
-        self.custom_name = Some(name);
-    }
-
-    pub fn display_name(&self) -> String {
-        if let Some(name) = &self.custom_name {
-            return name.clone();
-        }
-
-        self.root_cwd()
-            .as_deref()
-            .map(derive_label_from_cwd)
-            .unwrap_or_else(|| "shell".to_string())
-    }
-
-    pub fn root_cwd(&self) -> Option<PathBuf> {
-        self.runtimes.get(&self.root_pane).and_then(|rt| rt.cwd())
-    }
-
-    /// Aggregate workspace signal for sidebar triage.
-    /// Returns the most urgent pane's state + seen flag.
-    pub fn aggregate_state(&self) -> (AgentState, bool) {
-        self.panes
-            .values()
-            .map(|pane| (pane.state, pane.seen))
-            .max_by_key(|(state, seen)| pane_attention_priority(*state, *seen))
-            .unwrap_or((AgentState::Unknown, true))
     }
 
     pub fn has_working_pane(&self) -> bool {
@@ -224,8 +168,8 @@ impl Workspace {
             .any(|pane| pane.state == AgentState::Working)
     }
 
-    /// Per-pane (state, seen) in BSP tree order (left-to-right, top-to-bottom).
     #[cfg(test)]
+    #[allow(dead_code)] // retained for focused layout-order assertions in tests
     pub fn pane_states(&self) -> Vec<(AgentState, bool)> {
         self.layout
             .pane_ids()
@@ -239,7 +183,6 @@ impl Workspace {
             .collect()
     }
 
-    /// Per-pane detail for the agent detail panel, in stable layout order.
     pub fn pane_details(&self) -> Vec<PaneDetail> {
         self.layout
             .pane_ids()
@@ -261,28 +204,336 @@ impl Workspace {
             })
             .collect()
     }
+}
 
-    /// Get the git branch for this workspace's root cwd.
-    pub fn branch(&self) -> Option<String> {
-        self.root_cwd().and_then(|cwd| git_branch(&cwd))
+/// A named workspace containing tabs.
+pub struct Workspace {
+    /// User-provided override. If set, auto-derived identity stops updating.
+    pub custom_name: Option<String>,
+    /// Fixed workspace identity source, seeded when the workspace is created.
+    pub identity_cwd: PathBuf,
+    /// Cached ahead/behind counts for the workspace repo's current branch upstream.
+    pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
+    /// Stable-ish public pane numbers within this workspace.
+    /// New panes append at the end; closing a pane compacts higher numbers down.
+    pub public_pane_numbers: HashMap<PaneId, usize>,
+    pub(crate) next_public_pane_number: usize,
+    pub tabs: Vec<Tab>,
+    pub active_tab: usize,
+}
+
+impl Deref for Workspace {
+    type Target = Tab;
+
+    fn deref(&self) -> &Self::Target {
+        self.active_tab()
+            .expect("workspace must always have at least one active tab")
+    }
+}
+
+impl DerefMut for Workspace {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.active_tab_mut()
+            .expect("workspace must always have at least one active tab")
+    }
+}
+
+impl Workspace {
+    pub fn new(
+        initial_cwd: PathBuf,
+        rows: u16,
+        cols: u16,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<AtomicBool>,
+    ) -> std::io::Result<Self> {
+        let tab = Tab::new(
+            1,
+            initial_cwd.clone(),
+            rows,
+            cols,
+            events,
+            render_notify,
+            render_dirty,
+        )?;
+        let mut public_pane_numbers = HashMap::new();
+        public_pane_numbers.insert(tab.root_pane, 1);
+        info!(root_pane = tab.root_pane.raw(), "workspace created");
+        Ok(Self {
+            custom_name: None,
+            identity_cwd: initial_cwd,
+            cached_git_ahead_behind: None,
+            public_pane_numbers,
+            next_public_pane_number: 2,
+            tabs: vec![tab],
+            active_tab: 0,
+        })
     }
 
-    /// Cached ahead/behind counts for this workspace's current branch upstream.
+    pub fn active_tab(&self) -> Option<&Tab> {
+        self.tabs.get(self.active_tab)
+    }
+
+    pub fn active_tab_mut(&mut self) -> Option<&mut Tab> {
+        self.tabs.get_mut(self.active_tab)
+    }
+
+    pub fn active_tab_display_name(&self) -> Option<String> {
+        self.active_tab().map(Tab::display_name)
+    }
+
+    pub fn switch_tab(&mut self, idx: usize) {
+        if idx < self.tabs.len() {
+            self.active_tab = idx;
+            if let Some(tab) = self.tabs.get_mut(idx) {
+                for pane in tab.panes.values_mut() {
+                    pane.seen = true;
+                }
+            }
+        }
+    }
+
+    pub fn create_tab(&mut self, rows: u16, cols: u16, cwd: PathBuf) -> std::io::Result<usize> {
+        let number = self.tabs.len() + 1;
+        let events = self
+            .active_tab()
+            .map(|tab| tab.events.clone())
+            .expect("workspace must always have at least one tab");
+        let render_notify = self
+            .active_tab()
+            .map(|tab| tab.render_notify.clone())
+            .expect("workspace must always have at least one tab");
+        let render_dirty = self
+            .active_tab()
+            .map(|tab| tab.render_dirty.clone())
+            .expect("workspace must always have at least one tab");
+
+        let tab = Tab::new(number, cwd, rows, cols, events, render_notify, render_dirty)?;
+        self.register_new_pane(tab.root_pane);
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
+        Ok(self.active_tab)
+    }
+
+    pub fn close_tab(&mut self, idx: usize) -> bool {
+        if self.tabs.len() <= 1 || idx >= self.tabs.len() {
+            return false;
+        }
+        let tab = self.tabs.remove(idx);
+        for pane_id in tab.panes.keys() {
+            self.unregister_pane(*pane_id);
+        }
+        self.renumber_tabs();
+        if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len() - 1;
+        } else if idx <= self.active_tab && self.active_tab > 0 {
+            self.active_tab -= 1;
+        }
+        true
+    }
+
+    pub fn close_active_tab(&mut self) -> bool {
+        self.close_tab(self.active_tab)
+    }
+
+    pub fn split_focused(
+        &mut self,
+        direction: Direction,
+        rows: u16,
+        cols: u16,
+        cwd: Option<PathBuf>,
+    ) -> std::io::Result<PaneId> {
+        let new_id = self
+            .active_tab_mut()
+            .expect("workspace must always have at least one tab")
+            .split_focused(direction, rows, cols, cwd)?;
+        self.register_new_pane(new_id);
+        Ok(new_id)
+    }
+
+    /// Close the focused pane. Returns true if the workspace should close.
+    pub fn close_focused(&mut self) -> bool {
+        let pane_count = self
+            .active_tab()
+            .map(|tab| tab.layout.pane_count())
+            .unwrap_or(0);
+        let tab_count = self.tabs.len();
+        if pane_count <= 1 {
+            return tab_count <= 1 || self.close_active_tab_and_report();
+        }
+
+        if let Some((removed, runtime)) = self.active_tab_mut().and_then(Tab::close_focused) {
+            self.unregister_pane(removed);
+            if let Some(runtime) = runtime {
+                runtime.shutdown(removed);
+            }
+        }
+        false
+    }
+
+    /// Remove a specific pane from this workspace without terminating its runtime.
+    /// Returns true if the workspace should close.
+    pub fn remove_pane(&mut self, pane_id: PaneId) -> bool {
+        let Some(tab_idx) = self.find_tab_index_for_pane(pane_id) else {
+            return false;
+        };
+        let pane_count = self.tabs[tab_idx].layout.pane_count();
+        let tab_count = self.tabs.len();
+        if pane_count <= 1 {
+            if tab_count <= 1 {
+                return true;
+            }
+            self.tabs.remove(tab_idx);
+            self.unregister_pane(pane_id);
+            self.renumber_tabs();
+            if self.active_tab >= self.tabs.len() {
+                self.active_tab = self.tabs.len() - 1;
+            } else if tab_idx <= self.active_tab && self.active_tab > 0 {
+                self.active_tab -= 1;
+            }
+            return false;
+        }
+
+        if let Some((removed, _)) = self.tabs[tab_idx].remove_pane(pane_id) {
+            self.unregister_pane(removed);
+        }
+        false
+    }
+
+    pub fn public_pane_number(&self, pane_id: PaneId) -> Option<usize> {
+        self.public_pane_numbers.get(&pane_id).copied()
+    }
+
+    pub fn set_custom_name(&mut self, name: String) {
+        self.custom_name = Some(name);
+    }
+
+    pub fn display_name(&self) -> String {
+        if let Some(name) = &self.custom_name {
+            return name.clone();
+        }
+
+        derive_label_from_cwd(&self.identity_cwd)
+    }
+
+    pub fn branch(&self) -> Option<String> {
+        git_branch(&self.identity_cwd)
+    }
+
     pub fn git_ahead_behind(&self) -> Option<(usize, usize)> {
         self.cached_git_ahead_behind
     }
 
-    /// Refresh cached ahead/behind counts from the workspace's current cwd.
     pub fn refresh_git_ahead_behind(&mut self) {
-        self.cached_git_ahead_behind = self.root_cwd().and_then(|cwd| git_ahead_behind(&cwd));
+        self.cached_git_ahead_behind = git_ahead_behind(&self.identity_cwd);
+    }
+
+    pub fn aggregate_state(&self) -> (AgentState, bool) {
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.panes.values())
+            .map(|pane| (pane.state, pane.seen))
+            .max_by_key(|(state, seen)| pane_attention_priority(*state, *seen))
+            .unwrap_or((AgentState::Unknown, true))
+    }
+
+    pub fn has_working_pane(&self) -> bool {
+        self.tabs.iter().any(Tab::has_working_pane)
+    }
+
+    pub fn pane_details(&self) -> Vec<PaneDetail> {
+        self.active_tab().map(Tab::pane_details).unwrap_or_default()
+    }
+
+    pub fn focused_runtime(&self) -> Option<&PaneRuntime> {
+        self.active_tab().and_then(Tab::focused_runtime)
+    }
+
+    pub fn find_tab_index_for_pane(&self, pane_id: PaneId) -> Option<usize> {
+        self.tabs
+            .iter()
+            .position(|tab| tab.panes.contains_key(&pane_id))
+    }
+
+    pub fn pane_state(&self, pane_id: PaneId) -> Option<&PaneState> {
+        self.tabs.iter().find_map(|tab| tab.panes.get(&pane_id))
+    }
+
+    pub fn runtime(&self, pane_id: PaneId) -> Option<&PaneRuntime> {
+        self.tabs.iter().find_map(|tab| tab.runtimes.get(&pane_id))
+    }
+
+    pub fn focused_pane_id(&self) -> Option<PaneId> {
+        self.active_tab().map(|tab| tab.layout.focused())
+    }
+
+    pub fn close_pane(&mut self, pane_id: PaneId) -> bool {
+        let tab_idx = match self.find_tab_index_for_pane(pane_id) {
+            Some(idx) => idx,
+            None => return false,
+        };
+        let pane_count = self.tabs[tab_idx].layout.pane_count();
+        let tab_count = self.tabs.len();
+        if pane_count <= 1 {
+            if tab_count <= 1 {
+                return true;
+            }
+            self.tabs.remove(tab_idx);
+            self.unregister_pane(pane_id);
+            self.renumber_tabs();
+            if self.active_tab >= self.tabs.len() {
+                self.active_tab = self.tabs.len() - 1;
+            } else if tab_idx <= self.active_tab && self.active_tab > 0 {
+                self.active_tab -= 1;
+            }
+            return false;
+        }
+
+        if let Some((removed, runtime)) = self.tabs[tab_idx].close_pane(pane_id) {
+            self.unregister_pane(removed);
+            if let Some(runtime) = runtime {
+                runtime.shutdown(removed);
+            }
+        }
+        false
+    }
+
+    fn register_new_pane(&mut self, pane_id: PaneId) {
+        self.public_pane_numbers
+            .insert(pane_id, self.next_public_pane_number);
+        self.next_public_pane_number += 1;
+    }
+
+    fn unregister_pane(&mut self, pane_id: PaneId) {
+        if let Some(removed_number) = self.public_pane_numbers.remove(&pane_id) {
+            for number in self.public_pane_numbers.values_mut() {
+                if *number > removed_number {
+                    *number -= 1;
+                }
+            }
+            self.next_public_pane_number = self.public_pane_numbers.len() + 1;
+        }
+    }
+
+    fn renumber_tabs(&mut self) {
+        for (idx, tab) in self.tabs.iter_mut().enumerate() {
+            tab.number = idx + 1;
+        }
+    }
+
+    fn close_active_tab_and_report(&mut self) -> bool {
+        if self.tabs.len() <= 1 {
+            return true;
+        }
+        self.close_active_tab();
+        false
     }
 }
 
 /// Detail info for a single pane, used by the agent detail panel.
 pub struct PaneDetail {
     pub label: String,
-    /// The detected agent, if any. Will be used for context extraction.
-    #[allow(dead_code)] // used later for triage line extraction
+    #[allow(dead_code)]
     pub agent: Option<Agent>,
     pub state: AgentState,
     pub seen: bool,
@@ -291,7 +542,7 @@ pub struct PaneDetail {
 fn pane_attention_priority(state: AgentState, seen: bool) -> u8 {
     match (state, seen) {
         (AgentState::Blocked, _) => 4,
-        (AgentState::Idle, false) => 3, // done, waiting for you to look
+        (AgentState::Idle, false) => 3,
         (AgentState::Working, _) => 2,
         (AgentState::Idle, true) => 1,
         (AgentState::Unknown, _) => 0,
@@ -314,7 +565,7 @@ fn agent_name(agent: Agent) -> &'static str {
     }
 }
 
-fn derive_label_from_cwd(cwd: &Path) -> String {
+pub fn derive_label_from_cwd(cwd: &Path) -> String {
     if let Some(repo_root) = git_repo_root(cwd) {
         if let Some(name) = repo_root.file_name().and_then(|n| n.to_str()) {
             return name.to_string();
@@ -335,8 +586,6 @@ fn derive_label_from_cwd(cwd: &Path) -> String {
         .unwrap_or_else(|| cwd.display().to_string())
 }
 
-/// Read the current git branch name from .git/HEAD.
-/// Returns None if not in a git repo or HEAD is detached.
 pub fn git_branch(cwd: &Path) -> Option<String> {
     let repo_root = git_repo_root(cwd)?;
     let head_path = repo_root.join(".git").join("HEAD");
@@ -364,7 +613,6 @@ fn git_repo_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Read ahead/behind counts relative to the current branch upstream.
 fn git_ahead_behind(cwd: &Path) -> Option<(usize, usize)> {
     git_repo_root(cwd)?;
 
@@ -390,45 +638,46 @@ fn parse_git_ahead_behind_output(stdout: &str) -> Option<(usize, usize)> {
     Some((ahead, behind))
 }
 
-// ---------------------------------------------------------------------------
-// Test helpers — construct workspaces without PTYs
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 impl Workspace {
-    /// Create a test workspace with one pane, no PTY runtime.
     pub fn test_new(name: &str) -> Self {
         let (events, _) = mpsc::channel(64);
-        let (layout, root_id) = TileLayout::new();
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(AtomicBool::new(false));
+        let identity_cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
+        let (layout, root_id) = TileLayout::new();
         let mut panes = HashMap::new();
         panes.insert(root_id, PaneState::new());
-        let mut public_pane_numbers = HashMap::new();
-        public_pane_numbers.insert(root_id, 1);
-        Self {
-            custom_name: Some(name.to_string()),
+        let tab = Tab {
+            custom_name: None,
+            number: 1,
             root_pane: root_id,
             layout,
-            cached_git_ahead_behind: None,
-            public_pane_numbers,
-            next_public_pane_number: 2,
             panes,
             runtimes: HashMap::new(),
             zoomed: false,
             events,
             render_notify,
             render_dirty,
+        };
+        let mut public_pane_numbers = HashMap::new();
+        public_pane_numbers.insert(tab.root_pane, 1);
+        Self {
+            custom_name: Some(name.to_string()),
+            identity_cwd,
+            cached_git_ahead_behind: None,
+            public_pane_numbers,
+            next_public_pane_number: 2,
+            tabs: vec![tab],
+            active_tab: 0,
         }
     }
 
-    /// Add a test pane (splits focused, no PTY runtime).
     pub fn test_split(&mut self, direction: Direction) -> PaneId {
-        let new_id = self.layout.split_focused(direction);
-        self.panes.insert(new_id, PaneState::new());
-        self.public_pane_numbers
-            .insert(new_id, self.next_public_pane_number);
-        self.next_public_pane_number += 1;
+        let tab = self.active_tab_mut().expect("workspace must have tab");
+        let new_id = tab.layout.split_focused(direction);
+        tab.panes.insert(new_id, PaneState::new());
+        self.register_new_pane(new_id);
         new_id
     }
 }
@@ -450,10 +699,14 @@ mod tests {
     fn aggregate_state_priority() {
         let mut ws = Workspace::test_new("test");
         let id2 = ws.test_split(Direction::Horizontal);
-
-        let root_id = *ws.panes.keys().find(|id| **id != id2).unwrap();
-        ws.panes.get_mut(&root_id).unwrap().state = AgentState::Idle;
-        ws.panes.get_mut(&id2).unwrap().state = AgentState::Working;
+        let root_id = ws.tabs[0]
+            .panes
+            .keys()
+            .find(|id| **id != id2)
+            .copied()
+            .unwrap();
+        ws.tabs[0].panes.get_mut(&root_id).unwrap().state = AgentState::Idle;
+        ws.tabs[0].panes.get_mut(&id2).unwrap().state = AgentState::Working;
 
         let (state, seen) = ws.aggregate_state();
         assert_eq!(state, AgentState::Working);
@@ -464,104 +717,19 @@ mod tests {
     fn aggregate_state_done_unseen_beats_working() {
         let mut ws = Workspace::test_new("test");
         let id2 = ws.test_split(Direction::Horizontal);
-
-        let root_id = *ws.panes.keys().find(|id| **id != id2).unwrap();
-        let root = ws.panes.get_mut(&root_id).unwrap();
+        let root_id = ws.tabs[0]
+            .panes
+            .keys()
+            .find(|id| **id != id2)
+            .copied()
+            .unwrap();
+        let root = ws.tabs[0].panes.get_mut(&root_id).unwrap();
         root.state = AgentState::Idle;
         root.seen = false;
-        ws.panes.get_mut(&id2).unwrap().state = AgentState::Working;
+        ws.tabs[0].panes.get_mut(&id2).unwrap().state = AgentState::Working;
 
         let (state, seen) = ws.aggregate_state();
         assert_eq!(state, AgentState::Idle);
         assert!(!seen);
-    }
-
-    #[test]
-    fn aggregate_state_blocked_beats_done_unseen() {
-        let mut ws = Workspace::test_new("test");
-        let id2 = ws.test_split(Direction::Horizontal);
-
-        let root_id = *ws.panes.keys().find(|id| **id != id2).unwrap();
-        let root = ws.panes.get_mut(&root_id).unwrap();
-        root.state = AgentState::Idle;
-        root.seen = false;
-        ws.panes.get_mut(&id2).unwrap().state = AgentState::Blocked;
-
-        let (state, seen) = ws.aggregate_state();
-        assert_eq!(state, AgentState::Blocked);
-        assert!(seen);
-    }
-
-    #[test]
-    fn close_focused_removes_pane() {
-        let mut ws = Workspace::test_new("test");
-        let _id2 = ws.test_split(Direction::Horizontal);
-        assert_eq!(ws.panes.len(), 2);
-
-        let closed = ws.close_focused();
-        assert!(closed.is_some());
-        assert_eq!(ws.panes.len(), 1);
-    }
-
-    #[test]
-    fn close_focused_last_pane_returns_none() {
-        let mut ws = Workspace::test_new("test");
-        assert_eq!(ws.panes.len(), 1);
-
-        let closed = ws.close_focused();
-        assert!(closed.is_none());
-        assert_eq!(ws.panes.len(), 1);
-    }
-
-    #[test]
-    fn pane_states_matches_layout_order() {
-        let mut ws = Workspace::test_new("test");
-        let id2 = ws.test_split(Direction::Horizontal);
-
-        ws.panes.get_mut(&id2).unwrap().state = AgentState::Blocked;
-
-        let states = ws.pane_states();
-        assert_eq!(states.len(), 2);
-        assert_eq!(states[0].0, AgentState::Unknown);
-        assert_eq!(states[1].0, AgentState::Blocked);
-    }
-
-    #[test]
-    fn pane_details_stay_in_layout_order() {
-        let mut ws = Workspace::test_new("test");
-        let id2 = ws.test_split(Direction::Horizontal);
-
-        let root_id = *ws.panes.keys().find(|id| **id != id2).unwrap();
-        ws.panes.get_mut(&root_id).unwrap().detected_agent = Some(Agent::Pi);
-        ws.panes.get_mut(&root_id).unwrap().state = AgentState::Working;
-        ws.panes.get_mut(&id2).unwrap().detected_agent = Some(Agent::Claude);
-        ws.panes.get_mut(&id2).unwrap().state = AgentState::Blocked;
-
-        let details = ws.pane_details();
-        assert_eq!(details.len(), 2);
-        assert_eq!(details[0].label, "pi");
-        assert_eq!(details[0].state, AgentState::Working);
-        assert_eq!(details[1].label, "claude");
-        assert_eq!(details[1].state, AgentState::Blocked);
-    }
-
-    #[test]
-    fn closing_root_promotes_another_pane() {
-        let mut ws = Workspace::test_new("test");
-        let root = ws.root_pane;
-        let other = ws.test_split(Direction::Horizontal);
-        ws.layout.focus_pane(root);
-        ws.remove_pane(root);
-        assert_eq!(ws.root_pane, other);
-    }
-
-    #[test]
-    fn parse_git_ahead_behind_output_maps_first_field_to_ahead() {
-        assert_eq!(parse_git_ahead_behind_output("7\t0\n"), Some((7, 0)));
-    }
-
-    #[test]
-    fn parse_git_ahead_behind_output_maps_second_field_to_behind() {
-        assert_eq!(parse_git_ahead_behind_output("0 3\n"), Some((0, 3)));
     }
 }

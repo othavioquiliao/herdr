@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use serde::Deserialize;
+
+pub const CONFIG_PATH_ENV_VAR: &str = "HERDR_CONFIG_PATH";
 use tracing::warn;
 
 use crate::detect::Agent;
@@ -80,6 +82,20 @@ pub struct KeysConfig {
     pub rename_workspace: String,
     /// Close the selected workspace. Default: "d"
     pub close_workspace: String,
+    /// Select the previous workspace. Unset by default.
+    pub previous_workspace: String,
+    /// Select the next workspace. Unset by default.
+    pub next_workspace: String,
+    /// Create a new tab in the active workspace. Default: "c"
+    pub new_tab: String,
+    /// Rename the active tab. Unset by default.
+    pub rename_tab: String,
+    /// Select the previous tab. Unset by default.
+    pub previous_tab: String,
+    /// Select the next tab. Unset by default.
+    pub next_tab: String,
+    /// Close the active tab. Unset by default.
+    pub close_tab: String,
     /// Split pane vertically (side by side). Default: "v"
     pub split_vertical: String,
     /// Split pane horizontally (stacked). Default: "-"
@@ -184,6 +200,13 @@ impl Default for KeysConfig {
             new_workspace: "n".into(),
             rename_workspace: "shift+n".into(),
             close_workspace: "d".into(),
+            previous_workspace: "".into(),
+            next_workspace: "".into(),
+            new_tab: "c".into(),
+            rename_tab: "".into(),
+            previous_tab: "".into(),
+            next_tab: "".into(),
+            close_tab: "".into(),
             split_vertical: "v".into(),
             split_horizontal: "-".into(),
             close_pane: "x".into(),
@@ -343,6 +366,27 @@ impl Config {
             }
         }
 
+        fn optional_binding(
+            field: &'static str,
+            configured_label: &str,
+            diagnostics: &mut Vec<String>,
+        ) -> (Option<(KeyCode, KeyModifiers)>, String) {
+            if configured_label.trim().is_empty() {
+                return (None, String::new());
+            }
+            let (value, diag) = parse_key_combo_with_diagnostic(
+                configured_label,
+                field,
+                (KeyCode::Null, KeyModifiers::empty()),
+            );
+            if let Some(diag) = diag {
+                diagnostics.push(diag);
+                (None, String::new())
+            } else {
+                (Some(value), configured_label.to_string())
+            }
+        }
+
         let mut bindings = vec![
             binding(
                 "keys.new_workspace",
@@ -363,6 +407,13 @@ impl Config {
                 &self.keys.close_workspace,
                 "d",
                 (KeyCode::Char('d'), KeyModifiers::empty()),
+                &mut diagnostics,
+            ),
+            binding(
+                "keys.new_tab",
+                &self.keys.new_tab,
+                "c",
+                (KeyCode::Char('c'), KeyModifiers::empty()),
                 &mut diagnostics,
             ),
             binding(
@@ -409,6 +460,27 @@ impl Config {
             ),
         ];
 
+        let optional_bindings = [
+            optional_binding(
+                "keys.previous_workspace",
+                &self.keys.previous_workspace,
+                &mut diagnostics,
+            ),
+            optional_binding(
+                "keys.next_workspace",
+                &self.keys.next_workspace,
+                &mut diagnostics,
+            ),
+            optional_binding("keys.rename_tab", &self.keys.rename_tab, &mut diagnostics),
+            optional_binding(
+                "keys.previous_tab",
+                &self.keys.previous_tab,
+                &mut diagnostics,
+            ),
+            optional_binding("keys.next_tab", &self.keys.next_tab, &mut diagnostics),
+            optional_binding("keys.close_tab", &self.keys.close_tab, &mut diagnostics),
+        ];
+
         use std::collections::HashMap;
         let mut seen: HashMap<(KeyCode, KeyModifiers), &str> = HashMap::new();
         for binding in &mut bindings {
@@ -433,18 +505,26 @@ impl Config {
             rename_workspace_label: bindings[1].label.clone(),
             close_workspace: bindings[2].value,
             close_workspace_label: bindings[2].label.clone(),
-            split_vertical: bindings[3].value,
-            split_vertical_label: bindings[3].label.clone(),
-            split_horizontal: bindings[4].value,
-            split_horizontal_label: bindings[4].label.clone(),
-            close_pane: bindings[5].value,
-            close_pane_label: bindings[5].label.clone(),
-            fullscreen: bindings[6].value,
-            fullscreen_label: bindings[6].label.clone(),
-            resize_mode: bindings[7].value,
-            resize_mode_label: bindings[7].label.clone(),
-            toggle_sidebar: bindings[8].value,
-            toggle_sidebar_label: bindings[8].label.clone(),
+            previous_workspace: optional_bindings[0].0,
+            next_workspace: optional_bindings[1].0,
+            new_tab: bindings[3].value,
+            new_tab_label: bindings[3].label.clone(),
+            rename_tab: optional_bindings[2].0,
+            previous_tab: optional_bindings[3].0,
+            next_tab: optional_bindings[4].0,
+            close_tab: optional_bindings[5].0,
+            split_vertical: bindings[4].value,
+            split_vertical_label: bindings[4].label.clone(),
+            split_horizontal: bindings[5].value,
+            split_horizontal_label: bindings[5].label.clone(),
+            close_pane: bindings[6].value,
+            close_pane_label: bindings[6].label.clone(),
+            fullscreen: bindings[7].value,
+            fullscreen_label: bindings[7].label.clone(),
+            resize_mode: bindings[8].value,
+            resize_mode_label: bindings[8].label.clone(),
+            toggle_sidebar: bindings[9].value,
+            toggle_sidebar_label: bindings[9].label.clone(),
         };
 
         (prefix_diag, prefix, diagnostics, keybinds)
@@ -460,6 +540,14 @@ pub struct Keybinds {
     pub rename_workspace_label: String,
     pub close_workspace: (KeyCode, KeyModifiers),
     pub close_workspace_label: String,
+    pub previous_workspace: Option<(KeyCode, KeyModifiers)>,
+    pub next_workspace: Option<(KeyCode, KeyModifiers)>,
+    pub new_tab: (KeyCode, KeyModifiers),
+    pub new_tab_label: String,
+    pub rename_tab: Option<(KeyCode, KeyModifiers)>,
+    pub previous_tab: Option<(KeyCode, KeyModifiers)>,
+    pub next_tab: Option<(KeyCode, KeyModifiers)>,
+    pub close_tab: Option<(KeyCode, KeyModifiers)>,
     pub split_vertical: (KeyCode, KeyModifiers),
     pub split_vertical_label: String,
     pub split_horizontal: (KeyCode, KeyModifiers),
@@ -554,6 +642,9 @@ pub fn save_onboarding_choices(sound_enabled: bool, toast_enabled: bool) -> std:
 }
 
 pub fn config_path() -> PathBuf {
+    if let Ok(path) = std::env::var(CONFIG_PATH_ENV_VAR) {
+        return PathBuf::from(path);
+    }
     if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
         PathBuf::from(dir).join("herdr/config.toml")
     } else if let Ok(home) = std::env::var("HOME") {

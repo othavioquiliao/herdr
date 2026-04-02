@@ -186,6 +186,7 @@ impl App {
             mode,
             should_quit: false,
             request_new_workspace: false,
+            request_new_tab: false,
             request_complete_onboarding: false,
             name_input: String::new(),
             onboarding_step: 0,
@@ -198,6 +199,9 @@ impl App {
             }),
             view: state::ViewState {
                 sidebar_rect: Rect::default(),
+                tab_bar_rect: Rect::default(),
+                tab_hit_areas: Vec::new(),
+                new_tab_hit_area: Rect::default(),
                 terminal_area: Rect::default(),
                 pane_infos: Vec::new(),
                 split_borders: Vec::new(),
@@ -250,7 +254,7 @@ impl App {
             state
                 .workspaces
                 .get(idx)
-                .map(|ws| (idx, ws.layout.focused()))
+                .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
 
         Self {
@@ -316,6 +320,12 @@ impl App {
             if self.state.request_new_workspace {
                 self.state.request_new_workspace = false;
                 self.create_workspace();
+                needs_render = true;
+            }
+
+            if self.state.request_new_tab {
+                self.state.request_new_tab = false;
+                self.create_tab();
                 needs_render = true;
             }
 
@@ -682,7 +692,7 @@ impl App {
             self.state
                 .workspaces
                 .get(idx)
-                .map(|ws| (idx, ws.layout.focused()))
+                .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
         if current_focus == self.last_focus {
             return;
@@ -717,7 +727,7 @@ impl App {
             .workspaces
             .iter()
             .enumerate()
-            .find_map(|(ws_idx, ws)| ws.panes.get(&pane_id).map(|pane| (ws_idx, pane)))
+            .find_map(|(ws_idx, ws)| ws.pane_state(pane_id).map(|pane| (ws_idx, pane)))
     }
 
     fn public_workspace_id(&self, ws_idx: usize) -> String {
@@ -1451,6 +1461,38 @@ impl App {
         }
     }
 
+    fn create_tab(&mut self) {
+        let initial_cwd = self
+            .state
+            .active
+            .and_then(|i| self.state.workspaces.get(i))
+            .and_then(|ws| ws.focused_runtime())
+            .and_then(|rt| rt.cwd())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        if let Err(e) = self.create_tab_with_options(initial_cwd, true) {
+            error!(err = %e, "failed to create tab");
+        }
+    }
+
+    fn create_tab_with_options(
+        &mut self,
+        initial_cwd: std::path::PathBuf,
+        focus: bool,
+    ) -> std::io::Result<usize> {
+        let Some(ws_idx) = self.state.active else {
+            return self.create_workspace_with_options(initial_cwd, focus);
+        };
+        let (rows, cols) = self.state.estimate_pane_size();
+        let ws = &mut self.state.workspaces[ws_idx];
+        let idx = ws.create_tab(rows, cols, initial_cwd)?;
+        if focus {
+            ws.switch_tab(idx);
+            self.state.mode = Mode::Terminal;
+        }
+        Ok(idx)
+    }
+
     fn create_workspace_with_options(
         &mut self,
         initial_cwd: std::path::PathBuf,
@@ -1493,9 +1535,9 @@ impl App {
                 ));
             };
             Ok(ws
-                .layout
-                .pane_ids()
-                .into_iter()
+                .tabs
+                .iter()
+                .flat_map(|tab| tab.layout.pane_ids().into_iter())
                 .filter_map(|pane_id| self.pane_info(ws_idx, pane_id))
                 .collect())
         } else {
@@ -1505,9 +1547,9 @@ impl App {
                 .iter()
                 .enumerate()
                 .flat_map(|(ws_idx, ws)| {
-                    ws.layout
-                        .pane_ids()
-                        .into_iter()
+                    ws.tabs
+                        .iter()
+                        .flat_map(|tab| tab.layout.pane_ids().into_iter())
                         .filter_map(move |pane_id| self.pane_info(ws_idx, pane_id))
                 })
                 .collect())
@@ -1520,12 +1562,16 @@ impl App {
         pane_id: crate::layout::PaneId,
     ) -> Option<crate::api::schema::PaneInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        let pane = ws.panes.get(&pane_id)?;
-        let runtime = ws.runtimes.get(&pane_id);
+        let pane = ws.pane_state(pane_id)?;
+        let runtime = ws.runtime(pane_id);
+        let focused = self.state.active == Some(ws_idx)
+            && ws
+                .focused_pane_id()
+                .is_some_and(|focused| focused == pane_id);
         Some(crate::api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             workspace_id: self.public_workspace_id(ws_idx),
-            focused: self.state.active == Some(ws_idx) && ws.layout.focused() == pane_id,
+            focused,
             cwd: runtime
                 .and_then(|rt| rt.cwd())
                 .map(|cwd| cwd.display().to_string()),
@@ -1541,7 +1587,7 @@ impl App {
         pane_id: crate::layout::PaneId,
     ) -> Option<(&crate::pane::PaneRuntime, String)> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        let runtime = ws.runtimes.get(&pane_id)?;
+        let runtime = ws.runtime(pane_id)?;
         Some((runtime, self.public_workspace_id(ws_idx)))
     }
 
@@ -1554,7 +1600,7 @@ impl App {
         &crate::pane::PaneRuntime,
     )> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        let runtime = ws.runtimes.get(&pane_id)?;
+        let runtime = ws.runtime(pane_id)?;
         Some((&runtime.sender, runtime))
     }
 
@@ -1566,7 +1612,7 @@ impl App {
             number: index + 1,
             label: ws.display_name(),
             focused: self.state.active == Some(index),
-            pane_count: ws.panes.len(),
+            pane_count: ws.public_pane_numbers.len(),
             agent_state: pane_agent_state(agg_state),
         }
     }

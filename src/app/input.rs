@@ -32,6 +32,35 @@ use super::App;
 // Key handling
 // ---------------------------------------------------------------------------
 
+fn terminal_direct_navigation_action(state: &AppState, key: &KeyEvent) -> Option<NavigateAction> {
+    let kb = &state.keybinds;
+    if kb
+        .previous_workspace
+        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+    {
+        return Some(NavigateAction::PreviousWorkspace);
+    }
+    if kb
+        .next_workspace
+        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+    {
+        return Some(NavigateAction::NextWorkspace);
+    }
+    if kb
+        .previous_tab
+        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+    {
+        return Some(NavigateAction::PreviousTab);
+    }
+    if kb
+        .next_tab
+        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+    {
+        return Some(NavigateAction::NextTab);
+    }
+    None
+}
+
 impl App {
     pub(super) async fn handle_key(&mut self, key: TerminalKey) {
         match self.state.mode {
@@ -42,7 +71,9 @@ impl App {
                     Mode::Onboarding => self.handle_onboarding_key(key),
                     Mode::ReleaseNotes => self.handle_release_notes_key(key),
                     Mode::Navigate => handle_navigate_key(&mut self.state, key),
-                    Mode::RenameSession => handle_rename_key(&mut self.state, key),
+                    Mode::RenameWorkspace | Mode::RenameTab => {
+                        handle_rename_key(&mut self.state, key)
+                    }
                     Mode::Resize => handle_resize_key(&mut self.state, key),
                     Mode::ConfirmClose => handle_confirm_close_key(&mut self.state, key),
                     Mode::ContextMenu => handle_context_menu_key(&mut self.state, key),
@@ -222,6 +253,11 @@ impl App {
         self.state.update_dismissed = true;
 
         let key_event = key.as_key_event();
+
+        if let Some(action) = terminal_direct_navigation_action(&self.state, &key_event) {
+            execute_navigate_action(&mut self.state, action);
+            return;
+        }
 
         if self.state.is_prefix(&key_event) {
             self.state.mode = Mode::Navigate;
@@ -446,6 +482,13 @@ enum NavigateAction {
     NewWorkspace,
     RenameWorkspace,
     CloseWorkspace,
+    PreviousWorkspace,
+    NextWorkspace,
+    NewTab,
+    RenameTab,
+    PreviousTab,
+    NextTab,
+    CloseTab,
     SplitVertical,
     SplitHorizontal,
     ClosePane,
@@ -464,6 +507,45 @@ fn navigate_action_for_key(state: &AppState, key: &KeyEvent) -> Option<NavigateA
     }
     if key_matches(key, kb.close_workspace.0, kb.close_workspace.1) {
         return Some(NavigateAction::CloseWorkspace);
+    }
+    if kb
+        .previous_workspace
+        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+    {
+        return Some(NavigateAction::PreviousWorkspace);
+    }
+    if kb
+        .next_workspace
+        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+    {
+        return Some(NavigateAction::NextWorkspace);
+    }
+    if key_matches(key, kb.new_tab.0, kb.new_tab.1) {
+        return Some(NavigateAction::NewTab);
+    }
+    if kb
+        .rename_tab
+        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+    {
+        return Some(NavigateAction::RenameTab);
+    }
+    if kb
+        .previous_tab
+        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+    {
+        return Some(NavigateAction::PreviousTab);
+    }
+    if kb
+        .next_tab
+        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+    {
+        return Some(NavigateAction::NextTab);
+    }
+    if kb
+        .close_tab
+        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+    {
+        return Some(NavigateAction::CloseTab);
     }
     if key_matches(key, kb.split_vertical.0, kb.split_vertical.1) {
         return Some(NavigateAction::SplitVertical);
@@ -495,7 +577,7 @@ fn execute_navigate_action(state: &mut AppState, action: NavigateAction) {
         NavigateAction::RenameWorkspace => {
             if !state.workspaces.is_empty() {
                 state.name_input = state.workspaces[state.selected].display_name();
-                state.mode = Mode::RenameSession;
+                state.mode = Mode::RenameWorkspace;
             }
         }
         NavigateAction::CloseWorkspace => {
@@ -507,6 +589,38 @@ fn execute_navigate_action(state: &mut AppState, action: NavigateAction) {
                     leave_navigate_mode(state);
                 }
             }
+        }
+        NavigateAction::PreviousWorkspace => {
+            state.previous_workspace();
+            leave_navigate_mode(state);
+        }
+        NavigateAction::NextWorkspace => {
+            state.next_workspace();
+            leave_navigate_mode(state);
+        }
+        NavigateAction::NewTab => {
+            state.request_new_tab = true;
+            leave_navigate_mode(state);
+        }
+        NavigateAction::RenameTab => {
+            if let Some(ws) = state.active.and_then(|i| state.workspaces.get(i)) {
+                if let Some(name) = ws.active_tab_display_name() {
+                    state.name_input = name;
+                    state.mode = Mode::RenameTab;
+                }
+            }
+        }
+        NavigateAction::PreviousTab => {
+            state.previous_tab();
+            leave_navigate_mode(state);
+        }
+        NavigateAction::NextTab => {
+            state.next_tab();
+            leave_navigate_mode(state);
+        }
+        NavigateAction::CloseTab => {
+            state.close_tab();
+            leave_navigate_mode(state);
         }
         NavigateAction::SplitVertical => {
             state.split_pane(Direction::Horizontal);
@@ -567,8 +681,20 @@ fn handle_rename_key(state: &mut AppState, key: KeyEvent) {
             } else {
                 state.name_input.trim().to_string()
             };
-            if !new_name.is_empty() && !state.workspaces.is_empty() {
-                state.workspaces[state.selected].set_custom_name(new_name);
+            if !new_name.is_empty() {
+                match state.mode {
+                    Mode::RenameWorkspace if !state.workspaces.is_empty() => {
+                        state.workspaces[state.selected].set_custom_name(new_name);
+                    }
+                    Mode::RenameTab => {
+                        if let Some(ws) = state.active.and_then(|i| state.workspaces.get_mut(i)) {
+                            if let Some(tab) = ws.active_tab_mut() {
+                                tab.set_custom_name(new_name);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
             state.name_input.clear();
             state.mode = Mode::Navigate;
@@ -576,6 +702,9 @@ fn handle_rename_key(state: &mut AppState, key: KeyEvent) {
         KeyCode::Esc => {
             state.name_input.clear();
             state.mode = Mode::Navigate;
+        }
+        KeyCode::Char('c') if key.modifiers == crossterm::event::KeyModifiers::CONTROL => {
+            state.name_input.clear();
         }
         KeyCode::Backspace => {
             state.name_input.pop();
@@ -653,7 +782,7 @@ fn apply_context_menu_action(state: &mut AppState, menu: ContextMenuState, idx: 
         (ContextMenuKind::Workspace { ws_idx }, Some("Rename")) => {
             state.selected = ws_idx;
             state.name_input = state.workspaces[ws_idx].display_name();
-            state.mode = Mode::RenameSession;
+            state.mode = Mode::RenameWorkspace;
         }
         (ContextMenuKind::Workspace { ws_idx }, Some("Close")) => {
             state.selected = ws_idx;
@@ -663,6 +792,35 @@ fn apply_context_menu_action(state: &mut AppState, menu: ContextMenuState, idx: 
                 state.close_selected_workspace();
                 state.mode = Mode::Navigate;
             }
+        }
+        (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("New tab")) => {
+            state.selected = ws_idx;
+            state.active = Some(ws_idx);
+            state.switch_tab(tab_idx);
+            state.request_new_tab = true;
+            state.mode = Mode::Terminal;
+        }
+        (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Rename")) => {
+            state.selected = ws_idx;
+            state.active = Some(ws_idx);
+            state.switch_tab(tab_idx);
+            if let Some(ws) = state.workspaces.get(ws_idx) {
+                if let Some(name) = ws.active_tab_display_name() {
+                    state.name_input = name;
+                    state.mode = Mode::RenameTab;
+                }
+            }
+        }
+        (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Close")) => {
+            state.selected = ws_idx;
+            state.active = Some(ws_idx);
+            state.switch_tab(tab_idx);
+            state.close_tab();
+            state.mode = if state.active.is_some() {
+                Mode::Terminal
+            } else {
+                Mode::Navigate
+            };
         }
         (ContextMenuKind::Pane, Some("Split vertical")) => {
             state.split_pane(Direction::Horizontal);
@@ -758,6 +916,30 @@ impl AppState {
             && col < button.x + button.width
             && row >= button.y
             && row < button.y + button.height
+    }
+
+    fn rename_modal_inner(&self) -> Option<Rect> {
+        self.onboarding_modal_inner(56, 7)
+    }
+
+    fn rename_button_at(&self, col: u16, row: u16) -> Option<&'static str> {
+        let inner = self.rename_modal_inner()?;
+        if inner.height < 4 || inner.width < 28 {
+            return None;
+        }
+        let (save, clear, cancel) = crate::ui::rename_button_rects(inner);
+        if row != save.y {
+            return None;
+        }
+        if col >= save.x && col < save.x + save.width {
+            Some("save")
+        } else if col >= clear.x && col < clear.x + clear.width {
+            Some("clear")
+        } else if col >= cancel.x && col < cancel.x + cancel.width {
+            Some("cancel")
+        } else {
+            None
+        }
     }
 
     fn release_notes_body_rect(&self) -> Option<Rect> {
@@ -1082,6 +1264,19 @@ impl AppState {
                     return None;
                 }
 
+                if matches!(self.mode, Mode::RenameWorkspace | Mode::RenameTab) {
+                    match self.rename_button_at(mouse.column, mouse.row) {
+                        Some("save") => handle_rename_key(self, KeyEvent::from(KeyCode::Enter)),
+                        Some("clear") => self.name_input.clear(),
+                        Some("cancel") => handle_rename_key(self, KeyEvent::from(KeyCode::Esc)),
+                        None => {
+                            handle_rename_key(self, KeyEvent::from(KeyCode::Esc));
+                        }
+                        _ => {}
+                    }
+                    return None;
+                }
+
                 if self.mode == Mode::ContextMenu {
                     let item_idx = self.context_menu_item_at(mouse.column, mouse.row);
                     if let Some(menu) = self.context_menu.take() {
@@ -1137,6 +1332,17 @@ impl AppState {
                         }
                         return None;
                     }
+                }
+
+                if let Some(tab_idx) = self.tab_at(mouse.column, mouse.row) {
+                    self.switch_tab(tab_idx);
+                    self.mode = Mode::Terminal;
+                    return None;
+                }
+                if self.on_new_tab_button(mouse.column, mouse.row) {
+                    self.request_new_tab = true;
+                    self.mode = Mode::Terminal;
+                    return None;
                 }
 
                 if in_sidebar {
@@ -1300,6 +1506,23 @@ impl AppState {
                 }
             }
 
+            MouseEventKind::Down(MouseButton::Right)
+                if self.tab_at(mouse.column, mouse.row).is_some() =>
+            {
+                if let (Some(ws_idx), Some(tab_idx)) =
+                    (self.active, self.tab_at(mouse.column, mouse.row))
+                {
+                    self.switch_tab(tab_idx);
+                    self.context_menu = Some(ContextMenuState {
+                        kind: ContextMenuKind::Tab { ws_idx, tab_idx },
+                        x: mouse.column,
+                        y: mouse.row,
+                        selected: 0,
+                    });
+                    self.mode = Mode::ContextMenu;
+                }
+            }
+
             MouseEventKind::Down(MouseButton::Right) if !in_sidebar => {
                 if self.pane_at(mouse.column, mouse.row).is_some() {
                     self.context_menu = Some(ContextMenuState {
@@ -1337,6 +1560,29 @@ impl AppState {
     }
 
     /// Find which workspace index a sidebar row belongs to (two-section layout).
+    fn tab_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.view
+            .tab_hit_areas
+            .iter()
+            .enumerate()
+            .find_map(|(idx, area)| {
+                (row >= area.y
+                    && row < area.y + area.height
+                    && col >= area.x
+                    && col < area.x + area.width)
+                    .then_some(idx)
+            })
+    }
+
+    fn on_new_tab_button(&self, col: u16, row: u16) -> bool {
+        let area = self.view.new_tab_hit_area;
+        area.width > 0
+            && row >= area.y
+            && row < area.y + area.height
+            && col >= area.x
+            && col < area.x + area.width
+    }
+
     fn workspace_at_row(&self, row: u16) -> Option<usize> {
         let sidebar = self.view.sidebar_rect;
         let total_h = sidebar.height as usize;
@@ -1744,7 +1990,7 @@ mod tests {
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
         );
 
-        assert_eq!(state.mode, Mode::RenameSession);
+        assert_eq!(state.mode, Mode::RenameWorkspace);
         assert_eq!(state.name_input, "test");
     }
 

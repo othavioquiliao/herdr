@@ -3,10 +3,9 @@
 
 use tracing::{info, warn};
 
-use crate::detect::{Agent, AgentState};
+use crate::detect::AgentState;
 use crate::events::AppEvent;
 use crate::layout::{find_in_direction, NavDirection, PaneId};
-use crate::pane::EffectiveStateChange;
 
 use super::state::{AppState, Mode, ToastKind, ToastNotification};
 
@@ -44,30 +43,20 @@ fn notification_toast_for_state_change(
     }
 }
 
-fn agent_label(agent: Agent) -> &'static str {
+fn agent_label(agent: crate::detect::Agent) -> &'static str {
     match agent {
-        Agent::Pi => "pi",
-        Agent::Claude => "claude",
-        Agent::Codex => "codex",
-        Agent::Gemini => "gemini",
-        Agent::Cursor => "cursor",
-        Agent::Cline => "cline",
-        Agent::OpenCode => "opencode",
-        Agent::GithubCopilot => "copilot",
-        Agent::Kimi => "kimi",
-        Agent::Droid => "droid",
-        Agent::Amp => "amp",
+        crate::detect::Agent::Pi => "pi",
+        crate::detect::Agent::Claude => "claude",
+        crate::detect::Agent::Codex => "codex",
+        crate::detect::Agent::Gemini => "gemini",
+        crate::detect::Agent::Cursor => "cursor",
+        crate::detect::Agent::Cline => "cline",
+        crate::detect::Agent::OpenCode => "opencode",
+        crate::detect::Agent::GithubCopilot => "copilot",
+        crate::detect::Agent::Kimi => "kimi",
+        crate::detect::Agent::Droid => "droid",
+        crate::detect::Agent::Amp => "amp",
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PaneStateUpdate {
-    pub pane_id: PaneId,
-    pub ws_idx: usize,
-    pub previous_agent: Option<Agent>,
-    pub previous_state: AgentState,
-    pub agent: Option<Agent>,
-    pub state: AgentState,
 }
 
 // ---------------------------------------------------------------------------
@@ -79,8 +68,56 @@ impl AppState {
         if idx < self.workspaces.len() {
             self.active = Some(idx);
             self.selected = idx;
-            for pane in self.workspaces[idx].panes.values_mut() {
-                pane.seen = true;
+            if let Some(ws) = self.workspaces.get_mut(idx) {
+                ws.switch_tab(ws.active_tab);
+            }
+        }
+    }
+
+    pub fn switch_tab(&mut self, idx: usize) {
+        if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
+            ws.switch_tab(idx);
+        }
+    }
+
+    pub fn next_workspace(&mut self) {
+        if !self.workspaces.is_empty() {
+            let current = self.active.unwrap_or(self.selected);
+            let next = (current + 1) % self.workspaces.len();
+            self.switch_workspace(next);
+        }
+    }
+
+    pub fn previous_workspace(&mut self) {
+        if !self.workspaces.is_empty() {
+            let current = self.active.unwrap_or(self.selected);
+            let prev = if current == 0 {
+                self.workspaces.len() - 1
+            } else {
+                current - 1
+            };
+            self.switch_workspace(prev);
+        }
+    }
+
+    pub fn next_tab(&mut self) {
+        if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
+            if !ws.tabs.is_empty() {
+                let next = (ws.active_tab + 1) % ws.tabs.len();
+                ws.switch_tab(next);
+            }
+        }
+    }
+
+    pub fn previous_tab(&mut self) {
+        if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
+            if !ws.tabs.is_empty() {
+                let prev = if ws.active_tab == 0 {
+                    ws.tabs.len() - 1
+                } else {
+                    ws.active_tab - 1
+                };
+                ws.switch_tab(prev);
             }
         }
     }
@@ -113,8 +150,12 @@ impl AppState {
         let panes = &self.view.pane_infos;
         if let Some(focused) = panes.iter().find(|p| p.is_focused) {
             if let Some(target) = find_in_direction(focused, direction, panes) {
-                if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
-                    ws.layout.focus_pane(target);
+                if let Some(tab) = self
+                    .active
+                    .and_then(|i| self.workspaces.get_mut(i))
+                    .and_then(|ws| ws.active_tab_mut())
+                {
+                    tab.layout.focus_pane(target);
                 }
             }
         }
@@ -127,33 +168,63 @@ impl AppState {
                 .pane_infos
                 .iter()
                 .fold(first.rect, |acc, p| acc.union(p.rect));
-            if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
-                ws.layout.resize_focused(direction, 0.05, area);
+            if let Some(tab) = self
+                .active
+                .and_then(|i| self.workspaces.get_mut(i))
+                .and_then(|ws| ws.active_tab_mut())
+            {
+                tab.layout.resize_focused(direction, 0.05, area);
             }
         }
     }
 
     pub fn cycle_pane(&mut self, reverse: bool) {
-        if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
+        if let Some(tab) = self
+            .active
+            .and_then(|i| self.workspaces.get_mut(i))
+            .and_then(|ws| ws.active_tab_mut())
+        {
             if reverse {
-                ws.layout.focus_prev();
+                tab.layout.focus_prev();
             } else {
-                ws.layout.focus_next();
+                tab.layout.focus_next();
             }
         }
     }
 
     pub fn toggle_fullscreen(&mut self) {
-        if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
-            if ws.layout.pane_count() > 1 {
-                ws.zoomed = !ws.zoomed;
+        if let Some(tab) = self
+            .active
+            .and_then(|i| self.workspaces.get_mut(i))
+            .and_then(|ws| ws.active_tab_mut())
+        {
+            if tab.layout.pane_count() > 1 {
+                tab.zoomed = !tab.zoomed;
             }
         }
     }
 
     pub fn close_pane(&mut self) {
+        let should_close_workspace = self
+            .active
+            .and_then(|i| self.workspaces.get_mut(i))
+            .is_some_and(|ws| ws.close_focused());
+        if should_close_workspace {
+            self.close_selected_workspace();
+        }
+    }
+
+    pub fn close_tab(&mut self) {
+        let should_close_workspace = self
+            .active
+            .and_then(|i| self.workspaces.get(i))
+            .is_some_and(|ws| ws.tabs.len() <= 1);
+        if should_close_workspace {
+            self.close_selected_workspace();
+            return;
+        }
         if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
-            ws.close_focused();
+            ws.close_active_tab();
         }
     }
 }
@@ -184,7 +255,7 @@ impl AppState {
             None => return,
         };
 
-        let rt = match ws.runtimes.get(&sel.pane_id) {
+        let rt = match ws.runtime(sel.pane_id) {
             Some(r) => r,
             None => return,
         };
@@ -204,12 +275,9 @@ impl AppState {
 // ---------------------------------------------------------------------------
 
 impl AppState {
-    pub fn handle_app_event(&mut self, event: AppEvent) -> Vec<PaneStateUpdate> {
+    pub fn handle_app_event(&mut self, event: AppEvent) {
         match event {
-            AppEvent::PaneDied { pane_id } => {
-                self.handle_pane_died(pane_id);
-                Vec::new()
-            }
+            AppEvent::PaneDied { pane_id } => self.handle_pane_died(pane_id),
             AppEvent::UpdateReady { version } => {
                 self.update_available = Some(version.clone());
                 self.update_dismissed = true;
@@ -218,115 +286,65 @@ impl AppState {
                     title: format!("updated to v{version}"),
                     context: "restart to use it".to_string(),
                 });
-                Vec::new()
             }
             AppEvent::StateChanged {
                 pane_id,
                 agent,
                 state,
-            } => self
-                .update_pane_state(pane_id, |pane| pane.set_detected_state(agent, state))
-                .into_iter()
-                .collect(),
-            AppEvent::HookStateReported {
-                pane_id,
-                source,
-                agent,
-                state,
-                message,
-            } => self
-                .update_pane_state(pane_id, |pane| {
-                    pane.set_hook_authority(source, agent, state, message)
-                })
-                .into_iter()
-                .collect(),
-            AppEvent::HookAuthorityCleared { pane_id, source } => self
-                .update_pane_state(pane_id, |pane| pane.clear_hook_authority(source.as_deref()))
-                .into_iter()
-                .collect(),
-            AppEvent::HookAgentReleased {
-                pane_id,
-                source,
-                agent,
-            } => self
-                .update_pane_state(pane_id, |pane| pane.release_agent(&source, agent))
-                .into_iter()
-                .collect(),
-        }
-    }
+            } => {
+                for (ws_idx, ws) in self.workspaces.iter_mut().enumerate() {
+                    let workspace_name = ws.display_name();
+                    let Some(tab_idx) = ws.find_tab_index_for_pane(pane_id) else {
+                        continue;
+                    };
+                    if let Some(pane) = ws.tabs[tab_idx].panes.get_mut(&pane_id) {
+                        let is_active_ws = self.active == Some(ws_idx) && ws.active_tab == tab_idx;
+                        let prev_state = pane.state;
 
-    fn update_pane_state<F>(&mut self, pane_id: PaneId, update: F) -> Option<PaneStateUpdate>
-    where
-        F: FnOnce(&mut crate::pane::PaneState) -> Option<EffectiveStateChange>,
-    {
-        let ws_idx = self
-            .workspaces
-            .iter()
-            .position(|ws| ws.panes.contains_key(&pane_id))?;
-        let workspace_name = self.workspaces[ws_idx].display_name();
-        let change = {
-            let pane = self.workspaces[ws_idx].panes.get_mut(&pane_id)?;
-            update(pane)?
-        };
-        self.apply_pane_state_change(ws_idx, pane_id, &workspace_name, change);
-        Some(PaneStateUpdate {
-            pane_id,
-            ws_idx,
-            previous_agent: change.previous_agent,
-            previous_state: change.previous_state,
-            agent: change.agent,
-            state: change.state,
-        })
-    }
+                        // Mark unseen when transitioning to Idle in background
+                        if state == AgentState::Idle
+                            && prev_state != AgentState::Idle
+                            && !is_active_ws
+                        {
+                            pane.seen = false;
+                        }
 
-    fn apply_pane_state_change(
-        &mut self,
-        ws_idx: usize,
-        pane_id: PaneId,
-        workspace_name: &str,
-        change: EffectiveStateChange,
-    ) {
-        let is_active_ws = self.active == Some(ws_idx);
-        let Some(pane) = self.workspaces[ws_idx].panes.get_mut(&pane_id) else {
-            return;
-        };
+                        // Blocked prompts should always make noise; done sounds stay background-only.
+                        if self.sound.allows(agent) {
+                            if let Some(sound) =
+                                notification_sound_for_state_change(is_active_ws, prev_state, state)
+                            {
+                                crate::sound::play(sound);
+                            }
+                        }
 
-        if change.state == AgentState::Idle
-            && change.previous_state != AgentState::Idle
-            && !is_active_ws
-        {
-            pane.seen = false;
-        }
+                        if self.toast_config.enabled {
+                            if let (Some(agent), Some(kind)) = (
+                                agent,
+                                notification_toast_for_state_change(
+                                    is_active_ws,
+                                    prev_state,
+                                    state,
+                                ),
+                            ) {
+                                let event_text = match kind {
+                                    ToastKind::NeedsAttention => "needs attention",
+                                    ToastKind::Finished => "finished",
+                                    ToastKind::UpdateInstalled => "updated",
+                                };
+                                self.toast = Some(ToastNotification {
+                                    kind,
+                                    title: format!("{} {}", agent_label(agent), event_text),
+                                    context: format!("{} · {}", workspace_name, ws_idx + 1),
+                                });
+                            }
+                        }
 
-        if self.sound.allows(change.agent) {
-            if let Some(sound) = notification_sound_for_state_change(
-                is_active_ws,
-                change.previous_state,
-                change.state,
-            ) {
-                crate::sound::play(sound);
-            }
-        }
-
-        if self.toast_config.enabled {
-            if let (Some(agent), Some(kind)) = (
-                change.agent,
-                notification_toast_for_state_change(
-                    is_active_ws,
-                    change.previous_state,
-                    change.state,
-                ),
-            ) {
-                let event_text = match kind {
-                    ToastKind::NeedsAttention => "needs attention",
-                    ToastKind::Finished => "finished",
-                    ToastKind::UpdateInstalled => "updated",
-                };
-                self.toast = Some(ToastNotification {
-                    kind,
-                    title: format!("{} {}", agent_label(agent), event_text),
-                    context: format!("{} · {}", workspace_name, ws_idx + 1),
-                });
+                        pane.detected_agent = agent;
+                        pane.state = state;
+                        break;
+                    }
+                }
             }
         }
     }
@@ -335,16 +353,19 @@ impl AppState {
         let ws_idx = self
             .workspaces
             .iter()
-            .position(|ws| ws.panes.contains_key(&pane_id));
+            .position(|ws| ws.find_tab_index_for_pane(pane_id).is_some());
 
         let Some(ws_idx) = ws_idx else {
             warn!(pane = pane_id.raw(), "PaneDied for unknown pane");
             return;
         };
 
-        let ws = &mut self.workspaces[ws_idx];
+        let should_close_workspace = {
+            let ws = &mut self.workspaces[ws_idx];
+            ws.remove_pane(pane_id)
+        };
 
-        if ws.layout.pane_count() <= 1 {
+        if should_close_workspace {
             self.workspaces.remove(ws_idx);
             if self.workspaces.is_empty() {
                 self.active = None;
@@ -362,8 +383,6 @@ impl AppState {
                     self.selected = self.workspaces.len() - 1;
                 }
             }
-        } else {
-            ws.remove_pane(pane_id);
         }
     }
 }
@@ -538,94 +557,6 @@ mod tests {
 
         let pane = state.workspaces[1].panes.get(&bg_pane_id).unwrap();
         assert!(!pane.seen);
-    }
-
-    #[test]
-    fn hook_authority_ignores_fallback_state_changes() {
-        let mut state = app_with_workspaces(&["test"]);
-        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
-
-        state.handle_app_event(AppEvent::StateChanged {
-            pane_id,
-            agent: Some(Agent::Pi),
-            state: AgentState::Idle,
-        });
-        state.handle_app_event(AppEvent::HookStateReported {
-            pane_id,
-            source: "herdr:pi".into(),
-            agent: Agent::Pi,
-            state: AgentState::Working,
-            message: None,
-        });
-        state.handle_app_event(AppEvent::StateChanged {
-            pane_id,
-            agent: Some(Agent::Pi),
-            state: AgentState::Idle,
-        });
-
-        let pane = state.workspaces[0].panes.get(&pane_id).unwrap();
-        assert_eq!(pane.fallback_state, AgentState::Idle);
-        assert_eq!(pane.state, AgentState::Working);
-        assert!(pane.hook_authority.is_some());
-    }
-
-    #[test]
-    fn hook_authority_clears_when_agent_disappears() {
-        let mut state = app_with_workspaces(&["test"]);
-        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
-
-        state.handle_app_event(AppEvent::StateChanged {
-            pane_id,
-            agent: Some(Agent::Pi),
-            state: AgentState::Idle,
-        });
-        state.handle_app_event(AppEvent::HookStateReported {
-            pane_id,
-            source: "herdr:pi".into(),
-            agent: Agent::Pi,
-            state: AgentState::Working,
-            message: None,
-        });
-        state.handle_app_event(AppEvent::StateChanged {
-            pane_id,
-            agent: None,
-            state: AgentState::Unknown,
-        });
-
-        let pane = state.workspaces[0].panes.get(&pane_id).unwrap();
-        assert!(pane.hook_authority.is_none());
-        assert_eq!(pane.detected_agent, None);
-        assert_eq!(pane.state, AgentState::Unknown);
-    }
-
-    #[test]
-    fn hook_agent_release_clears_identity_immediately() {
-        let mut state = app_with_workspaces(&["test"]);
-        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
-
-        state.handle_app_event(AppEvent::StateChanged {
-            pane_id,
-            agent: Some(Agent::Pi),
-            state: AgentState::Idle,
-        });
-        state.handle_app_event(AppEvent::HookStateReported {
-            pane_id,
-            source: "herdr:pi".into(),
-            agent: Agent::Pi,
-            state: AgentState::Working,
-            message: None,
-        });
-        state.handle_app_event(AppEvent::HookAgentReleased {
-            pane_id,
-            source: "herdr:pi".into(),
-            agent: Agent::Pi,
-        });
-
-        let pane = state.workspaces[0].panes.get(&pane_id).unwrap();
-        assert!(pane.hook_authority.is_none());
-        assert_eq!(pane.detected_agent, None);
-        assert_eq!(pane.fallback_state, AgentState::Unknown);
-        assert_eq!(pane.state, AgentState::Unknown);
     }
 
     #[test]

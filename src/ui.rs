@@ -42,20 +42,35 @@ pub fn compute_view(app: &mut AppState, area: Rect) {
     let [sidebar_area, main_area] =
         Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(1)]).areas(area);
 
-    let terminal_area = main_area;
+    let has_tabs = app.active.and_then(|i| app.workspaces.get(i)).is_some();
+    let (tab_bar_rect, terminal_area) = if has_tabs && main_area.height > 1 {
+        let [tab_bar_rect, terminal_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(main_area);
+        (tab_bar_rect, terminal_area)
+    } else {
+        (Rect::default(), main_area)
+    };
 
-    // Compute split borders
+    let tab_hit_areas = app
+        .active
+        .and_then(|i| app.workspaces.get(i))
+        .map(|ws| compute_tab_hit_areas(ws, tab_bar_rect))
+        .unwrap_or_default();
+    let new_tab_hit_area = compute_new_tab_hit_area(&tab_hit_areas, tab_bar_rect);
+
     let split_borders = app
         .active
         .and_then(|i| app.workspaces.get(i))
         .map(|ws| ws.layout.splits(terminal_area))
         .unwrap_or_default();
 
-    // Compute pane layout + reconcile sizes
     let pane_infos = compute_pane_infos(app, terminal_area);
 
     app.view = crate::app::ViewState {
         sidebar_rect: sidebar_area,
+        tab_bar_rect,
+        tab_hit_areas,
+        new_tab_hit_area,
         terminal_area,
         pane_infos,
         split_borders,
@@ -65,6 +80,7 @@ pub fn compute_view(app: &mut AppState, area: Rect) {
 /// Render the UI — reads AppState but does not mutate it.
 pub fn render(app: &AppState, frame: &mut Frame) {
     let sidebar_area = app.view.sidebar_rect;
+    let tab_bar_area = app.view.tab_bar_rect;
     let terminal_area = app.view.terminal_area;
 
     if app.sidebar_collapsed {
@@ -72,6 +88,7 @@ pub fn render(app: &AppState, frame: &mut Frame) {
     } else {
         render_sidebar(app, frame, sidebar_area);
     }
+    render_tab_bar(app, frame, tab_bar_area);
     render_panes(app, frame, terminal_area);
 
     match app.mode {
@@ -85,7 +102,7 @@ pub fn render(app: &AppState, frame: &mut Frame) {
             render_context_menu(app, frame);
         }
         Mode::Settings => render_settings_overlay(app, frame, frame.area()),
-        Mode::RenameSession => {}
+        Mode::RenameWorkspace | Mode::RenameTab => render_rename_overlay(app, frame, frame.area()),
         Mode::Terminal => {}
     }
 
@@ -101,6 +118,87 @@ pub fn render(app: &AppState, frame: &mut Frame) {
             toast,
             has_config_diagnostic,
             &app.palette,
+        );
+    }
+}
+
+const MIN_TAB_WIDTH: u16 = 8;
+const NEW_TAB_WIDTH: u16 = 3;
+
+fn compute_tab_hit_areas(ws: &crate::workspace::Workspace, area: Rect) -> Vec<Rect> {
+    if area.width == 0 || area.height == 0 {
+        return Vec::new();
+    }
+
+    let mut x = area.x;
+    let mut rects = Vec::new();
+    let right = area.x + area.width;
+    for tab in &ws.tabs {
+        if x >= right.saturating_sub(NEW_TAB_WIDTH) {
+            break;
+        }
+        let desired = (tab.display_name().chars().count() as u16 + 4).max(MIN_TAB_WIDTH);
+        let remaining = right.saturating_sub(NEW_TAB_WIDTH).saturating_sub(x);
+        let width = desired.min(remaining).max(1);
+        rects.push(Rect::new(x, area.y, width, 1));
+        x = x.saturating_add(width + 1);
+    }
+    rects
+}
+
+fn compute_new_tab_hit_area(tab_hit_areas: &[Rect], area: Rect) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return Rect::default();
+    }
+    let x = tab_hit_areas
+        .last()
+        .map(|rect| rect.x + rect.width + 1)
+        .unwrap_or(area.x)
+        .min(area.x + area.width.saturating_sub(NEW_TAB_WIDTH));
+    Rect::new(x, area.y, NEW_TAB_WIDTH.min(area.width), 1)
+}
+
+fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let Some(ws_idx) = app.active else {
+        return;
+    };
+    let Some(ws) = app.workspaces.get(ws_idx) else {
+        return;
+    };
+
+    let p = &app.palette;
+
+    frame.render_widget(
+        Paragraph::new(" ".repeat(area.width as usize)).style(Style::default().bg(p.panel_bg)),
+        area,
+    );
+
+    for (idx, tab) in ws.tabs.iter().enumerate() {
+        let Some(rect) = app.view.tab_hit_areas.get(idx).copied() else {
+            break;
+        };
+        let active = idx == ws.active_tab;
+        let style = if active {
+            Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.overlay1).bg(p.surface0)
+        };
+        let width = rect.width as usize;
+        let name = tab.display_name();
+        let text = format!(" {:width$}", name, width = width.saturating_sub(1));
+        frame.render_widget(Paragraph::new(text).style(style), rect);
+    }
+
+    if app.view.new_tab_hit_area.width > 0 {
+        frame.render_widget(
+            Paragraph::new(" + ").style(Style::default().fg(p.overlay1)),
+            app.view.new_tab_hit_area,
         );
     }
 }
@@ -217,7 +315,7 @@ fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: Rect) {
     let is_navigating = matches!(
         app.mode,
         Mode::Navigate
-            | Mode::RenameSession
+            | Mode::RenameWorkspace
             | Mode::Resize
             | Mode::ConfirmClose
             | Mode::ContextMenu
@@ -284,7 +382,7 @@ fn render_sidebar(app: &AppState, frame: &mut Frame, area: Rect) {
     let is_navigating = matches!(
         app.mode,
         Mode::Navigate
-            | Mode::RenameSession
+            | Mode::RenameWorkspace
             | Mode::Resize
             | Mode::ConfirmClose
             | Mode::ContextMenu
@@ -357,8 +455,7 @@ fn render_workspace_list(app: &AppState, frame: &mut Frame, area: Rect, is_navig
         let (agg_state, agg_seen) = ws.aggregate_state();
 
         // Determine row height for background fill
-        let has_second_line =
-            ws.branch().is_some() || (app.mode == Mode::RenameSession && i == app.selected);
+        let has_second_line = ws.branch().is_some();
         let row_height: u16 = if has_second_line { 2 } else { 1 };
 
         // Background fill: selected gets brighter surface, active gets subtle surface
@@ -419,17 +516,9 @@ fn render_workspace_list(app: &AppState, frame: &mut Frame, area: Rect, is_navig
         );
         row_y += 1;
 
-        // Line 2: branch or rename input
+        // Line 2: branch
         if row_y < list_bottom {
-            if app.mode == Mode::RenameSession && i == app.selected {
-                let text = format!("   {}\u{2588}", app.name_input);
-                frame.render_widget(Clear, Rect::new(area.x, row_y, area.width, 1));
-                frame.render_widget(
-                    Paragraph::new(text).style(Style::default().fg(p.yellow)),
-                    Rect::new(area.x, row_y, area.width, 1),
-                );
-                row_y += 1;
-            } else if let Some(branch) = ws.branch() {
+            if let Some(branch) = ws.branch() {
                 let upstream_label = ws.git_ahead_behind().and_then(|(ahead, behind)| {
                     let mut parts = Vec::new();
                     if ahead > 0 {
@@ -1314,11 +1403,13 @@ fn render_navigate_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     let kb = &app.keybinds;
     let line1 = Line::from(vec![
         Span::styled(format!(" {}", kb.new_workspace_label), key),
-        Span::styled(" new  ", dim),
+        Span::styled(" new ws  ", dim),
         Span::styled(kb.rename_workspace_label.as_str(), key),
-        Span::styled(" rename  ", dim),
+        Span::styled(" rename ws  ", dim),
         Span::styled(kb.close_workspace_label.as_str(), key),
         Span::styled(" close ws  ", dim),
+        Span::styled(kb.new_tab_label.as_str(), key),
+        Span::styled(" new tab  ", dim),
         Span::styled(kb.split_vertical_label.as_str(), key),
         Span::styled(" split│  ", dim),
         Span::styled(kb.split_horizontal_label.as_str(), key),
@@ -1435,6 +1526,90 @@ fn render_resize_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
 }
 
 /// Centered popup confirmation dialog with dimmed background.
+pub(crate) fn rename_button_rects(inner: Rect) -> (Rect, Rect, Rect) {
+    let save_w = 10u16;
+    let clear_w = 11u16;
+    let cancel_w = 12u16;
+    let gap = 2u16;
+    let total_w = save_w + gap + clear_w + gap + cancel_w;
+    let x = inner.x + inner.width.saturating_sub(total_w) / 2;
+    let y = inner.y + 3;
+    (
+        Rect::new(x, y, save_w, 1),
+        Rect::new(x + save_w + gap, y, clear_w, 1),
+        Rect::new(x + save_w + gap + clear_w + gap, y, cancel_w, 1),
+    )
+}
+
+fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
+    dim_background(frame, area);
+
+    let title = match app.mode {
+        Mode::RenameWorkspace => "rename workspace",
+        Mode::RenameTab => "rename tab",
+        _ => return,
+    };
+
+    let Some(inner) = render_modal_shell(frame, area, 56, 7, &app.palette) else {
+        return;
+    };
+    if inner.height < 4 {
+        return;
+    }
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas::<5>(inner);
+
+    render_modal_header(frame, rows[0], title, &app.palette);
+
+    let input_rect = Rect::new(rows[2].x, rows[2].y, rows[2].width, 1);
+    frame.render_widget(Clear, input_rect);
+    frame.render_widget(
+        Paragraph::new(format!(" {}█", app.name_input)).style(
+            Style::default()
+                .fg(app.palette.text)
+                .bg(app.palette.surface0),
+        ),
+        input_rect,
+    );
+
+    let (save_rect, clear_rect, cancel_rect) = rename_button_rects(inner);
+
+    frame.render_widget(
+        Paragraph::new(" ↵ save ").style(
+            Style::default()
+                .fg(app.palette.panel_bg)
+                .bg(app.palette.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        save_rect,
+    );
+    frame.render_widget(
+        Paragraph::new(" ^c clear ").style(
+            Style::default()
+                .fg(app.palette.text)
+                .bg(app.palette.surface0)
+                .add_modifier(Modifier::BOLD),
+        ),
+        clear_rect,
+    );
+    frame.render_widget(
+        Paragraph::new(" esc cancel ").style(
+            Style::default()
+                .fg(app.palette.text)
+                .bg(app.palette.surface0)
+                .add_modifier(Modifier::BOLD),
+        ),
+        cancel_rect,
+    );
+}
+
 fn render_confirm_close_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     let ws_name = app
         .workspaces

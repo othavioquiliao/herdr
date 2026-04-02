@@ -132,7 +132,7 @@ fn workspace_and_pane_management_commands_work() {
     let runtime_dir = base.join("runtime");
     let socket_path = runtime_dir.join("herdr.sock");
 
-    let mut herdr = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    let herdr = spawn_herdr(&config_home, &runtime_dir, &socket_path);
     wait_for_socket(&socket_path, Duration::from_secs(5));
 
     let listed = run_cli(&socket_path, &["workspace", "list"]);
@@ -206,7 +206,7 @@ fn pane_run_read_and_wait_commands_work() {
     let runtime_dir = base.join("runtime");
     let socket_path = runtime_dir.join("herdr.sock");
 
-    let mut herdr = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    let herdr = spawn_herdr(&config_home, &runtime_dir, &socket_path);
     wait_for_socket(&socket_path, Duration::from_secs(5));
 
     let created = send_request(
@@ -272,7 +272,7 @@ fn closing_pane_terminates_processes_inside_it() {
     let runtime_dir = base.join("runtime");
     let socket_path = runtime_dir.join("herdr.sock");
 
-    let mut herdr = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    let herdr = spawn_herdr(&config_home, &runtime_dir, &socket_path);
     wait_for_socket(&socket_path, Duration::from_secs(5));
 
     let created = run_cli(
@@ -335,7 +335,7 @@ fn closing_workspace_terminates_processes_inside_it() {
     let runtime_dir = base.join("runtime");
     let socket_path = runtime_dir.join("herdr.sock");
 
-    let mut herdr = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    let herdr = spawn_herdr(&config_home, &runtime_dir, &socket_path);
     wait_for_socket(&socket_path, Duration::from_secs(5));
 
     let created = run_cli(
@@ -390,7 +390,7 @@ fn ids_are_compact_and_positional() {
     let runtime_dir = base.join("runtime");
     let socket_path = runtime_dir.join("herdr.sock");
 
-    let mut herdr = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    let herdr = spawn_herdr(&config_home, &runtime_dir, &socket_path);
     wait_for_socket(&socket_path, Duration::from_secs(5));
 
     let ws1 = run_cli(
@@ -577,7 +577,7 @@ fn wait_agent_state_exits_when_state_matches() {
         ),
     );
     let child = pair.slave.spawn_command(cmd).unwrap();
-    let mut herdr = SpawnedHerdr {
+    let herdr = SpawnedHerdr {
         _master: pair.master,
         child,
     };

@@ -107,6 +107,13 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # new_workspace = "n"
 # rename_workspace = "shift+n"
 # close_workspace = "d"
+# previous_workspace = "" # optional, unset by default
+# next_workspace = ""     # optional, unset by default
+# new_tab = "c"
+# rename_tab = ""         # optional, unset by default
+# previous_tab = ""       # optional, unset by default
+# next_tab = ""           # optional, unset by default
+# close_tab = ""          # optional, unset by default
 # split_vertical = "v"
 # split_horizontal = "-"
 # close_pane = "x"
@@ -204,8 +211,9 @@ fn main() -> io::Result<()> {
         println!("  --show-changelog    Preview the current version's release notes");
         println!("  --help, -h          Show this help");
         println!();
-        println!("Config: ~/.config/herdr/config.toml");
+        println!("Config: {}", config::config_path().display());
         println!("Logs:   ~/.config/herdr/herdr.log");
+        println!("Env:    HERDR_CONFIG_PATH overrides config file path");
         println!("Home:   https://herdr.dev");
         return Ok(());
     }

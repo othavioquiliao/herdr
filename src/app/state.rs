@@ -324,6 +324,9 @@ impl Palette {
 /// Updated before each render, consumed by render and mouse handling.
 pub struct ViewState {
     pub sidebar_rect: Rect,
+    pub tab_bar_rect: Rect,
+    pub tab_hit_areas: Vec<Rect>,
+    pub new_tab_hit_area: Rect,
     pub terminal_area: Rect,
     pub pane_infos: Vec<PaneInfo>,
     pub split_borders: Vec<SplitBorder>,
@@ -335,7 +338,8 @@ pub enum Mode {
     ReleaseNotes,
     Navigate,
     Terminal,
-    RenameSession,
+    RenameWorkspace,
+    RenameTab,
     Resize,
     ConfirmClose,
     ContextMenu,
@@ -414,6 +418,7 @@ pub(crate) struct DragState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextMenuKind {
     Workspace { ws_idx: usize },
+    Tab { ws_idx: usize, tab_idx: usize },
     Pane,
 }
 
@@ -429,6 +434,7 @@ impl ContextMenuState {
     pub fn items(&self) -> &'static [&'static str] {
         match self.kind {
             ContextMenuKind::Workspace { .. } => &["Rename", "Close"],
+            ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
             ContextMenuKind::Pane => &[
                 "Split vertical",
                 "Split horizontal",
@@ -469,6 +475,7 @@ pub struct AppState {
     pub mode: Mode,
     pub should_quit: bool,
     pub request_new_workspace: bool,
+    pub request_new_tab: bool,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub onboarding_step: usize,
@@ -559,6 +566,7 @@ impl AppState {
             mode: Mode::Navigate,
             should_quit: false,
             request_new_workspace: false,
+            request_new_tab: false,
             request_complete_onboarding: false,
             name_input: String::new(),
             onboarding_step: 0,
@@ -566,6 +574,9 @@ impl AppState {
             release_notes: None,
             view: ViewState {
                 sidebar_rect: Rect::default(),
+                tab_bar_rect: Rect::default(),
+                tab_hit_areas: Vec::new(),
+                new_tab_hit_area: Rect::default(),
                 terminal_area: Rect::default(),
                 pane_infos: Vec::new(),
                 split_borders: Vec::new(),
@@ -597,6 +608,14 @@ impl AppState {
                 rename_workspace_label: "shift+n".into(),
                 close_workspace: (KeyCode::Char('d'), KeyModifiers::empty()),
                 close_workspace_label: "d".into(),
+                previous_workspace: None,
+                next_workspace: None,
+                new_tab: (KeyCode::Char('c'), KeyModifiers::empty()),
+                new_tab_label: "c".into(),
+                rename_tab: None,
+                previous_tab: None,
+                next_tab: None,
+                close_tab: None,
                 split_vertical: (KeyCode::Char('v'), KeyModifiers::empty()),
                 split_vertical_label: "v".into(),
                 split_horizontal: (KeyCode::Char('-'), KeyModifiers::empty()),
