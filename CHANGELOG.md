@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+- New tabs now open directly into the rename flow, with the default tab name prefilled and replaced on first type so you can name tabs as you create them.
+
+### Changed
+- Polished modal layout and spacing across onboarding, settings, keybind help, and release notes so overlays feel more consistent and their content/actions line up more cleanly.
+- Debug builds now use separate runtime/config paths from normal releases, which avoids local development sessions colliding with your main herdr install.
+
+### Fixed
+- Starting a second herdr instance against an active socket now fails fast with a clear error instead of clobbering the running session.
+- Fixed pane and agent state updates being dropped under internal event queue pressure, which could leave a pane showing stale status after work finished.
+- Fixed onboarding modal sizing and click targets, and corrected release-notes scroll calculations when a scrollbar is present.
+
 ## [0.3.0] - 2026-04-03
 
 ### Major Changes
