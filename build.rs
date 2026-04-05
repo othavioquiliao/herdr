@@ -43,10 +43,14 @@ fn main() {
 
     let lib_dir = vendored_dir.join("zig-out/lib");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=static=ghostty-vt");
-    if target.contains("linux") {
-        println!("cargo:rustc-link-lib=dylib=stdc++");
-    } else if target.contains("apple-darwin") {
+    if target.contains("apple-darwin") {
+        let static_lib = lib_dir.join("libghostty-vt.a");
+        println!("cargo:rustc-link-arg={}", static_lib.display());
         println!("cargo:rustc-link-lib=dylib=c++");
+    } else {
+        println!("cargo:rustc-link-lib=static=ghostty-vt");
+        if target.contains("linux") {
+            println!("cargo:rustc-link-lib=dylib=stdc++");
+        }
     }
 }
