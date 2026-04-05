@@ -7,11 +7,9 @@ use std::sync::{
 
 use bytes::Bytes;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use ratatui::{
-    layout::Rect,
-    style::{Color, Modifier, Style},
-    Frame,
-};
+#[cfg(feature = "ghostty-vt")]
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::{layout::Rect, Frame};
 use tokio::sync::{mpsc, Notify};
 use tracing::{debug, error, info, warn};
 use tui_term::widget::PseudoTerminal;
@@ -416,6 +414,15 @@ impl PaneTerminal {
         }
     }
 
+    fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
+        let _ = theme;
+        match self {
+            Self::Vt(_) => {}
+            #[cfg(feature = "ghostty-vt")]
+            Self::Ghostty(ghostty) => ghostty.apply_host_terminal_theme(theme),
+        }
+    }
+
     fn keyboard_protocol(
         &self,
         fallback: crate::input::KeyboardProtocol,
@@ -676,14 +683,33 @@ impl GhosttyPaneTerminal {
             })
             .map_err(|e| std::io::Error::other(e.to_string()))?;
 
-        let render_state = crate::ghostty::RenderState::new()
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let render_state =
+            crate::ghostty::RenderState::new().map_err(|e| std::io::Error::other(e.to_string()))?;
         Ok(Self {
             core: Mutex::new(GhosttyPaneCore {
                 terminal,
                 render_state,
             }),
         })
+    }
+
+    fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
+        if let Ok(mut core) = self.core.lock() {
+            if let Some(color) = theme.foreground {
+                let sequence = crate::terminal_theme::osc_set_default_color_sequence(
+                    crate::terminal_theme::DefaultColorKind::Foreground,
+                    color,
+                );
+                core.terminal.write(sequence.as_bytes());
+            }
+            if let Some(color) = theme.background {
+                let sequence = crate::terminal_theme::osc_set_default_color_sequence(
+                    crate::terminal_theme::DefaultColorKind::Background,
+                    color,
+                );
+                core.terminal.write(sequence.as_bytes());
+            }
+        }
     }
 
     fn process_pty_bytes(
@@ -745,7 +771,9 @@ impl GhosttyPaneTerminal {
         };
         let scrollbar = core.terminal.scrollbar().ok()?;
         Some(ScrollMetrics {
-            offset_from_bottom: scrollbar.total.saturating_sub(scrollbar.offset + scrollbar.len),
+            offset_from_bottom: scrollbar
+                .total
+                .saturating_sub(scrollbar.offset + scrollbar.len),
             max_offset_from_bottom: scrollbar.total.saturating_sub(scrollbar.len),
             viewport_rows: scrollbar.len,
         })
@@ -778,8 +806,14 @@ impl GhosttyPaneTerminal {
             .terminal
             .mode_get(crate::ghostty::MODE_FOCUS_EVENT)
             .ok()?;
-        let mouse_sgr = core.terminal.mode_get(crate::ghostty::MODE_MOUSE_SGR).ok()?;
-        let mouse_utf8 = core.terminal.mode_get(crate::ghostty::MODE_MOUSE_UTF8).ok()?;
+        let mouse_sgr = core
+            .terminal
+            .mode_get(crate::ghostty::MODE_MOUSE_SGR)
+            .ok()?;
+        let mouse_utf8 = core
+            .terminal
+            .mode_get(crate::ghostty::MODE_MOUSE_UTF8)
+            .ok()?;
         let mouse_alternate_scroll = core
             .terminal
             .mode_get(crate::ghostty::MODE_MOUSE_ALTERNATE_SCROLL)
@@ -1056,33 +1090,42 @@ fn ghostty_mouse_event_from_button_kind(
 ) -> Option<crate::ghostty::MouseEvent> {
     let mut event = crate::ghostty::MouseEvent::new().ok()?;
     let (action, button) = match kind {
-        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-            (crate::ghostty::MOUSE_ACTION_PRESS, Some(crate::ghostty::MOUSE_BUTTON_LEFT))
-        }
-        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Middle) => {
-            (crate::ghostty::MOUSE_ACTION_PRESS, Some(crate::ghostty::MOUSE_BUTTON_MIDDLE))
-        }
-        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
-            (crate::ghostty::MOUSE_ACTION_PRESS, Some(crate::ghostty::MOUSE_BUTTON_RIGHT))
-        }
-        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
-            (crate::ghostty::MOUSE_ACTION_RELEASE, Some(crate::ghostty::MOUSE_BUTTON_LEFT))
-        }
-        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Middle) => {
-            (crate::ghostty::MOUSE_ACTION_RELEASE, Some(crate::ghostty::MOUSE_BUTTON_MIDDLE))
-        }
-        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Right) => {
-            (crate::ghostty::MOUSE_ACTION_RELEASE, Some(crate::ghostty::MOUSE_BUTTON_RIGHT))
-        }
-        crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
-            (crate::ghostty::MOUSE_ACTION_MOTION, Some(crate::ghostty::MOUSE_BUTTON_LEFT))
-        }
-        crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Middle) => {
-            (crate::ghostty::MOUSE_ACTION_MOTION, Some(crate::ghostty::MOUSE_BUTTON_MIDDLE))
-        }
-        crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Right) => {
-            (crate::ghostty::MOUSE_ACTION_MOTION, Some(crate::ghostty::MOUSE_BUTTON_RIGHT))
-        }
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) => (
+            crate::ghostty::MOUSE_ACTION_PRESS,
+            Some(crate::ghostty::MOUSE_BUTTON_LEFT),
+        ),
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Middle) => (
+            crate::ghostty::MOUSE_ACTION_PRESS,
+            Some(crate::ghostty::MOUSE_BUTTON_MIDDLE),
+        ),
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Right) => (
+            crate::ghostty::MOUSE_ACTION_PRESS,
+            Some(crate::ghostty::MOUSE_BUTTON_RIGHT),
+        ),
+        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left) => (
+            crate::ghostty::MOUSE_ACTION_RELEASE,
+            Some(crate::ghostty::MOUSE_BUTTON_LEFT),
+        ),
+        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Middle) => (
+            crate::ghostty::MOUSE_ACTION_RELEASE,
+            Some(crate::ghostty::MOUSE_BUTTON_MIDDLE),
+        ),
+        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Right) => (
+            crate::ghostty::MOUSE_ACTION_RELEASE,
+            Some(crate::ghostty::MOUSE_BUTTON_RIGHT),
+        ),
+        crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left) => (
+            crate::ghostty::MOUSE_ACTION_MOTION,
+            Some(crate::ghostty::MOUSE_BUTTON_LEFT),
+        ),
+        crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Middle) => (
+            crate::ghostty::MOUSE_ACTION_MOTION,
+            Some(crate::ghostty::MOUSE_BUTTON_MIDDLE),
+        ),
+        crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Right) => (
+            crate::ghostty::MOUSE_ACTION_MOTION,
+            Some(crate::ghostty::MOUSE_BUTTON_RIGHT),
+        ),
         _ => return None,
     };
     event.set_action(action);
@@ -1273,6 +1316,7 @@ fn ghostty_unshifted_ascii_pair(c: char) -> Option<char> {
     })
 }
 
+#[cfg(feature = "ghostty-vt")]
 fn ghostty_visible_text(core: &mut GhosttyPaneCore) -> Result<String, crate::ghostty::Error> {
     let GhosttyPaneCore {
         terminal,
@@ -1292,7 +1336,10 @@ fn ghostty_visible_text(core: &mut GhosttyPaneCore) -> Result<String, crate::gho
 }
 
 #[cfg(feature = "ghostty-vt")]
-fn ghostty_recent_text(core: &GhosttyPaneCore, lines: usize) -> Result<String, crate::ghostty::Error> {
+fn ghostty_recent_text(
+    core: &GhosttyPaneCore,
+    lines: usize,
+) -> Result<String, crate::ghostty::Error> {
     let total_rows = core.terminal.total_rows()?;
     let cols = core.terminal.cols()?;
     let start = total_rows.saturating_sub(lines);
@@ -1387,7 +1434,9 @@ fn ghostty_line_from_cells(
 }
 
 #[cfg(feature = "ghostty-vt")]
-fn ghostty_cell_symbol(cells: &crate::ghostty::RowCellIter<'_>) -> Result<String, crate::ghostty::Error> {
+fn ghostty_cell_symbol(
+    cells: &crate::ghostty::RowCellIter<'_>,
+) -> Result<String, crate::ghostty::Error> {
     let graphemes = cells.graphemes()?;
     if graphemes.is_empty() {
         return Ok(" ".to_string());
@@ -1411,8 +1460,18 @@ fn ghostty_cell_style(
     default_bg: Option<Color>,
 ) -> Style {
     let style_data = cells.style().unwrap_or_default();
-    let mut fg = cells.fg_color().ok().flatten().map(ghostty_color).or(default_fg);
-    let mut bg = cells.bg_color().ok().flatten().map(ghostty_color).or(default_bg);
+    let mut fg = cells
+        .fg_color()
+        .ok()
+        .flatten()
+        .map(ghostty_color)
+        .or(default_fg);
+    let mut bg = cells
+        .bg_color()
+        .ok()
+        .flatten()
+        .map(ghostty_color)
+        .or(default_bg);
     if style_data.invisible {
         fg = bg.or(default_bg);
     }
@@ -1607,11 +1666,16 @@ impl PaneRuntime {
         shutdown_pane_processes(pane_id, self.child_pid.load(Ordering::Acquire));
     }
 
+    pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
+        self.terminal.apply_host_terminal_theme(theme);
+    }
+
     pub fn spawn(
         pane_id: PaneId,
         rows: u16,
         cols: u16,
         cwd: std::path::PathBuf,
+        _host_terminal_theme: crate::terminal_theme::TerminalTheme,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
@@ -1655,11 +1719,10 @@ impl PaneRuntime {
         let terminal = {
             let terminal = crate::ghostty::Terminal::new(cols, rows, 10000)
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let pane_terminal = GhosttyPaneTerminal::new(terminal, input_tx.clone())?;
+            pane_terminal.apply_host_terminal_theme(_host_terminal_theme);
             (
-                Arc::new(PaneTerminal::Ghostty(GhosttyPaneTerminal::new(
-                    terminal,
-                    input_tx.clone(),
-                )?)),
+                Arc::new(PaneTerminal::Ghostty(pane_terminal)),
                 Arc::new(AtomicU16::new(0)),
             )
         };
@@ -2159,7 +2222,9 @@ mod tests {
     fn ghostty_key_encoding_honors_application_cursor_mode() {
         let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
-        terminal.mode_set(crate::ghostty::MODE_APPLICATION_CURSOR_KEYS, true).unwrap();
+        terminal
+            .mode_set(crate::ghostty::MODE_APPLICATION_CURSOR_KEYS, true)
+            .unwrap();
         let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
 
         let encoded = pane.encode_terminal_key(
@@ -2215,9 +2280,13 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         let (resize_tx, _resize_rx) = mpsc::channel(1);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
-        terminal.mode_set(crate::ghostty::MODE_FOCUS_EVENT, true).unwrap();
+        terminal
+            .mode_set(crate::ghostty::MODE_FOCUS_EVENT, true)
+            .unwrap();
         let runtime = PaneRuntime {
-            terminal: Arc::new(PaneTerminal::Ghostty(GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap())),
+            terminal: Arc::new(PaneTerminal::Ghostty(
+                GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap(),
+            )),
             sender: tx,
             resize_tx,
             current_size: Cell::new((80, 24)),
@@ -2239,7 +2308,9 @@ mod tests {
         let (resize_tx, _resize_rx) = mpsc::channel(1);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
         let runtime = PaneRuntime {
-            terminal: Arc::new(PaneTerminal::Ghostty(GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap())),
+            terminal: Arc::new(PaneTerminal::Ghostty(
+                GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap(),
+            )),
             sender: tx,
             resize_tx,
             current_size: Cell::new((80, 24)),
@@ -2251,7 +2322,11 @@ mod tests {
         };
 
         assert!(!runtime.try_send_focus_event(crate::ghostty::FocusEvent::Gained));
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), rx.recv()).await.is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), rx.recv())
+                .await
+                .is_err()
+        );
     }
 
     #[test]

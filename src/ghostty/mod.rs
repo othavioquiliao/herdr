@@ -350,9 +350,7 @@ impl Terminal {
         }
         Ok(match out {
             ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_PRIMARY => ActiveScreen::Primary,
-            ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_ALTERNATE => {
-                ActiveScreen::Alternate
-            }
+            ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_ALTERNATE => ActiveScreen::Alternate,
             _ => ActiveScreen::Primary,
         })
     }
@@ -408,8 +406,13 @@ impl Terminal {
             return Ok(buffer);
         }
         unsafe {
-            ffi::ghostty_grid_ref_graphemes(&grid_ref, buffer.as_mut_ptr(), buffer.len(), &mut required)
-                .into_result()?;
+            ffi::ghostty_grid_ref_graphemes(
+                &grid_ref,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut required,
+            )
+            .into_result()?;
         }
         buffer.truncate(required);
         Ok(buffer)
@@ -527,12 +530,16 @@ impl RenderState {
     }
 
     pub fn cursor_viewport(&self) -> Result<Option<CursorViewport>, Error> {
-        if !self.get_bool(ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE)? {
+        if !self.get_bool(
+            ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE,
+        )? {
             return Ok(None);
         }
         Ok(Some(CursorViewport {
-            x: self.get_u16(ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X)?,
-            y: self.get_u16(ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y)?,
+            x: self
+                .get_u16(ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X)?,
+            y: self
+                .get_u16(ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y)?,
             wide_tail: self.get_bool(
                 ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_WIDE_TAIL,
             )?,
@@ -1007,9 +1014,7 @@ mod tests {
         let responses = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
         let sink = responses.clone();
         terminal
-            .set_write_pty_callback(move |bytes| {
-                sink.lock().unwrap().extend_from_slice(bytes)
-            })
+            .set_write_pty_callback(move |bytes| sink.lock().unwrap().extend_from_slice(bytes))
             .unwrap();
 
         terminal.write(b"\x1b[6n");

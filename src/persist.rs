@@ -385,6 +385,7 @@ fn restore_tab(
             rows,
             cols,
             cwd.clone(),
+            crate::terminal_theme::TerminalTheme::default(),
             events.clone(),
             render_notify.clone(),
             render_dirty.clone(),

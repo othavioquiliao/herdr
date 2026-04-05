@@ -58,6 +58,7 @@ impl Tab {
         initial_cwd: PathBuf,
         rows: u16,
         cols: u16,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
@@ -68,6 +69,7 @@ impl Tab {
             rows,
             cols,
             initial_cwd.clone(),
+            host_terminal_theme,
             events.clone(),
             render_notify.clone(),
             render_dirty.clone(),
@@ -111,6 +113,7 @@ impl Tab {
         rows: u16,
         cols: u16,
         cwd: Option<PathBuf>,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
     ) -> std::io::Result<PaneId> {
         let new_id = self.layout.split_focused(direction);
         let actual_cwd =
@@ -120,6 +123,7 @@ impl Tab {
             rows,
             cols,
             actual_cwd.clone(),
+            host_terminal_theme,
             self.events.clone(),
             self.render_notify.clone(),
             self.render_dirty.clone(),
@@ -277,6 +281,7 @@ impl Workspace {
         initial_cwd: PathBuf,
         rows: u16,
         cols: u16,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<AtomicBool>,
@@ -286,6 +291,7 @@ impl Workspace {
             initial_cwd.clone(),
             rows,
             cols,
+            host_terminal_theme,
             events,
             render_notify,
             render_dirty,
@@ -328,7 +334,13 @@ impl Workspace {
         }
     }
 
-    pub fn create_tab(&mut self, rows: u16, cols: u16, cwd: PathBuf) -> std::io::Result<usize> {
+    pub fn create_tab(
+        &mut self,
+        rows: u16,
+        cols: u16,
+        cwd: PathBuf,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+    ) -> std::io::Result<usize> {
         let number = self.tabs.len() + 1;
         let events = self
             .active_tab()
@@ -343,7 +355,16 @@ impl Workspace {
             .map(|tab| tab.render_dirty.clone())
             .expect("workspace must always have at least one tab");
 
-        let tab = Tab::new(number, cwd, rows, cols, events, render_notify, render_dirty)?;
+        let tab = Tab::new(
+            number,
+            cwd,
+            rows,
+            cols,
+            host_terminal_theme,
+            events,
+            render_notify,
+            render_dirty,
+        )?;
         self.register_new_pane(tab.root_pane);
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -377,11 +398,12 @@ impl Workspace {
         rows: u16,
         cols: u16,
         cwd: Option<PathBuf>,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
     ) -> std::io::Result<PaneId> {
         let new_id = self
             .active_tab_mut()
             .expect("workspace must always have at least one tab")
-            .split_focused(direction, rows, cols, cwd)?;
+            .split_focused(direction, rows, cols, cwd, host_terminal_theme)?;
         self.register_new_pane(new_id);
         Ok(new_id)
     }

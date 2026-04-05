@@ -2080,9 +2080,12 @@ impl AppState {
                 }
             }
 
-            MouseEventKind::Up(MouseButton::Middle) | MouseEventKind::Up(MouseButton::Right)
+            MouseEventKind::Up(MouseButton::Middle)
+            | MouseEventKind::Up(MouseButton::Right)
             | MouseEventKind::Drag(MouseButton::Middle)
-            | MouseEventKind::Drag(MouseButton::Right) if !in_sidebar => {
+            | MouseEventKind::Drag(MouseButton::Right)
+                if !in_sidebar =>
+            {
                 if let Some(info) = self.pane_mouse_target(mouse.column, mouse.row).cloned() {
                     let _ = self.forward_pane_mouse_button(&info, mouse);
                 }
@@ -2390,7 +2393,8 @@ impl AppState {
     }
 
     fn pane_mouse_target(&self, col: u16, row: u16) -> Option<&PaneInfo> {
-        self.pane_at(col, row).or_else(|| self.pane_frame_at(col, row))
+        self.pane_at(col, row)
+            .or_else(|| self.pane_frame_at(col, row))
     }
 
     fn pane_frame_at(&self, col: u16, row: u16) -> Option<&PaneInfo> {
@@ -2613,7 +2617,9 @@ impl AppState {
             .and_then(|rt| rt.cwd());
 
         if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
-            if let Ok(new_id) = ws.split_focused(direction, new_rows, new_cols, cwd) {
+            if let Ok(new_id) =
+                ws.split_focused(direction, new_rows, new_cols, cwd, self.host_terminal_theme)
+            {
                 ws.layout.focus_pane(new_id);
                 self.mode = Mode::Terminal;
             }

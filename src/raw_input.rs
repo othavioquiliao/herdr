@@ -7,6 +7,7 @@ use std::os::fd::AsRawFd;
 use tokio::sync::mpsc;
 
 use crate::input::{parse_terminal_key_sequence, TerminalKey};
+use crate::terminal_theme::{parse_default_color_response, DefaultColorKind, RgbColor};
 
 const ESC: u8 = 0x1b;
 const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
@@ -17,6 +18,10 @@ pub enum RawInputEvent {
     Key(TerminalKey),
     Paste(String),
     Mouse(MouseEvent),
+    HostDefaultColor {
+        kind: DefaultColorKind,
+        color: RgbColor,
+    },
     Unsupported,
 }
 
@@ -161,6 +166,10 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
         let seq_len = complete_escape_sequence_len(buffer)?;
         let seq = std::str::from_utf8(&buffer[..seq_len]).ok()?;
 
+        if let Some((kind, color)) = parse_default_color_response(seq) {
+            return Some((RawInputEvent::HostDefaultColor { kind, color }, seq_len));
+        }
+
         if let Some(mouse) = parse_sgr_mouse(seq) {
             return Some((RawInputEvent::Mouse(mouse), seq_len));
         }
@@ -200,8 +209,11 @@ fn complete_escape_sequence_len(buffer: &[u8]) -> Option<usize> {
         );
     }
 
-    if buffer.starts_with(b"\x1b]") || buffer.starts_with(b"\x1bP") || buffer.starts_with(b"\x1b_")
-    {
+    if buffer.starts_with(b"\x1b]") {
+        return find_osc_terminator(buffer);
+    }
+
+    if buffer.starts_with(b"\x1bP") || buffer.starts_with(b"\x1b_") {
         return find_subsequence(buffer, b"\x1b\\").map(|idx| idx + 2);
     }
 
@@ -210,6 +222,17 @@ fn complete_escape_sequence_len(buffer: &[u8]) -> Option<usize> {
     }
 
     Some(2)
+}
+
+fn find_osc_terminator(buffer: &[u8]) -> Option<usize> {
+    find_subsequence(buffer, b"\x1b\\")
+        .map(|idx| idx + 2)
+        .or_else(|| {
+            buffer
+                .iter()
+                .position(|byte| *byte == b'\x07')
+                .map(|idx| idx + 1)
+        })
 }
 
 fn find_csi_final(buffer: &[u8], finals: &[u8]) -> Option<usize> {
@@ -404,6 +427,44 @@ mod tests {
         assert_eq!(mouse.kind, MouseEventKind::Down(MouseButton::Left));
         assert_eq!(mouse.column, 19);
         assert_eq!(mouse.row, 9);
+    }
+
+    #[test]
+    fn parses_host_default_color_response_with_st() {
+        let (RawInputEvent::HostDefaultColor { kind, color }, consumed) =
+            extract_one_event(b"\x1b]10;rgb:cccc/dddd/eeee\x1b\\").unwrap()
+        else {
+            panic!("expected host color response");
+        };
+        assert_eq!(consumed, 25);
+        assert_eq!(kind, DefaultColorKind::Foreground);
+        assert_eq!(
+            color,
+            RgbColor {
+                r: 0xcc,
+                g: 0xdd,
+                b: 0xee
+            }
+        );
+    }
+
+    #[test]
+    fn parses_host_default_color_response_with_bel() {
+        let (RawInputEvent::HostDefaultColor { kind, color }, consumed) =
+            extract_one_event(b"\x1b]11;#112233\x07").unwrap()
+        else {
+            panic!("expected host color response");
+        };
+        assert_eq!(consumed, 13);
+        assert_eq!(kind, DefaultColorKind::Background);
+        assert_eq!(
+            color,
+            RgbColor {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33
+            }
+        );
     }
 
     #[test]

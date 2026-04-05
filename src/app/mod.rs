@@ -256,6 +256,7 @@ impl App {
                 original_theme: None,
             },
             global_menu: state::MenuListState::new(0),
+            host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
         };
 
         for ws in &mut state.workspaces {
@@ -308,6 +309,7 @@ impl App {
         if self.input_rx.is_none() {
             self.input_rx = Some(crate::raw_input::spawn_input_reader());
         }
+        self.query_host_terminal_theme();
 
         let mut needs_render = true;
 
@@ -494,8 +496,42 @@ impl App {
                 self.handle_mouse(mouse);
                 true
             }
+            crate::raw_input::RawInputEvent::HostDefaultColor { kind, color } => {
+                let next_theme = self.state.host_terminal_theme.with_color(kind, color);
+                if next_theme == self.state.host_terminal_theme {
+                    return false;
+                }
+                self.state.host_terminal_theme = next_theme;
+                self.apply_host_terminal_theme_to_panes();
+                true
+            }
             crate::raw_input::RawInputEvent::Unsupported => false,
         }
+    }
+
+    fn query_host_terminal_theme(&self) {
+        use std::io::Write;
+
+        let _ = std::io::stdout()
+            .write_all(crate::terminal_theme::HOST_COLOR_QUERY_SEQUENCE.as_bytes());
+        let _ = std::io::stdout().flush();
+    }
+
+    fn apply_host_terminal_theme_to_panes(&self) {
+        if self.state.host_terminal_theme.is_empty() {
+            return;
+        }
+
+        for workspace in &self.state.workspaces {
+            for tab in &workspace.tabs {
+                for runtime in tab.runtimes.values() {
+                    runtime.apply_host_terminal_theme(self.state.host_terminal_theme);
+                }
+            }
+        }
+
+        self.render_dirty.store(true, Ordering::Release);
+        self.render_notify.notify_one();
     }
 
     fn handle_resize_poll(&mut self) -> bool {
@@ -1179,7 +1215,7 @@ impl App {
                     .workspaces
                     .get_mut(ws_idx)
                     .ok_or_else(|| std::io::Error::other("workspace disappeared"))
-                    .and_then(|ws| ws.create_tab(rows, cols, cwd));
+                    .and_then(|ws| ws.create_tab(rows, cols, cwd, self.state.host_terminal_theme));
                 match result {
                     Ok(tab_idx) => {
                         if params.focus {
@@ -1378,6 +1414,7 @@ impl App {
                     rows,
                     cols,
                     params.cwd.map(std::path::PathBuf::from),
+                    self.state.host_terminal_theme,
                 ) {
                     Ok(new_pane_id) => new_pane_id,
                     Err(err) => {
@@ -1907,7 +1944,7 @@ impl App {
         };
         let (rows, cols) = self.state.estimate_pane_size();
         let ws = &mut self.state.workspaces[ws_idx];
-        let idx = ws.create_tab(rows, cols, initial_cwd)?;
+        let idx = ws.create_tab(rows, cols, initial_cwd, self.state.host_terminal_theme)?;
         if focus {
             ws.switch_tab(idx);
             self.state.mode = Mode::Terminal;
@@ -1925,6 +1962,7 @@ impl App {
             initial_cwd,
             rows,
             cols,
+            self.state.host_terminal_theme,
             self.event_tx.clone(),
             self.render_notify.clone(),
             self.render_dirty.clone(),

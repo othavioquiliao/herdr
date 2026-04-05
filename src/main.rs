@@ -37,6 +37,7 @@ mod raw_input;
 mod release_notes;
 mod selection;
 mod sound;
+mod terminal_theme;
 mod ui;
 mod update;
 mod workspace;

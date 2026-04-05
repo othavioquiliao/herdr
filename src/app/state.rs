@@ -5,6 +5,7 @@ use ratatui::style::Color;
 
 use crate::layout::{PaneInfo, SplitBorder};
 use crate::selection::Selection;
+use crate::terminal_theme::TerminalTheme;
 use crate::workspace::Workspace;
 
 // ---------------------------------------------------------------------------
@@ -595,6 +596,8 @@ pub struct AppState {
     pub settings: SettingsState,
     /// Highlight state for the bottom-right global launcher menu.
     pub global_menu: MenuListState,
+    /// Resolved host terminal default colors for theming embedded panes.
+    pub host_terminal_theme: TerminalTheme,
 }
 
 impl AppState {
@@ -740,6 +743,7 @@ impl AppState {
                 original_theme: None,
             },
             global_menu: MenuListState::new(0),
+            host_terminal_theme: TerminalTheme::default(),
         }
     }
 }
