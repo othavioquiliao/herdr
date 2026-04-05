@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -27,12 +28,17 @@ fn main() {
     let optimize = env::var("LIBGHOSTTY_VT_OPTIMIZE").unwrap_or_else(|_| "ReleaseFast".into());
     let target = env::var("TARGET").expect("TARGET");
     let zig_target = zig_target(&target);
+    let version_string = fs::read_to_string(vendored_dir.join("VERSION"))
+        .expect("failed to read vendored libghostty-vt VERSION")
+        .trim()
+        .to_string();
 
     let status = Command::new("zig")
         .arg("build")
         .arg("-Demit-lib-vt")
         .arg(format!("-Doptimize={optimize}"))
         .arg(format!("-Dtarget={zig_target}"))
+        .arg(format!("-Dversion-string={version_string}"))
         .current_dir(&vendored_dir)
         .status()
         .expect("failed to execute zig build for vendored libghostty-vt");
