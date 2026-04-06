@@ -356,6 +356,18 @@ pub enum Mode {
     KeybindHelp,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AgentPanelScope {
+    CurrentWorkspace,
+    AllWorkspaces,
+}
+
+impl Default for AgentPanelScope {
+    fn default() -> Self {
+        Self::CurrentWorkspace
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Settings UI state
 // ---------------------------------------------------------------------------
@@ -586,6 +598,7 @@ pub struct AppState {
     pub sidebar_width: u16,
     pub sidebar_width_auto: bool,
     pub sidebar_collapsed: bool,
+    pub agent_panel_scope: AgentPanelScope,
     pub confirm_close: bool,
     #[allow(dead_code)] // kept for backward compat; palette.accent is the source of truth
     pub accent: Color,
@@ -693,6 +706,7 @@ impl AppState {
             sidebar_width: 26,
             sidebar_width_auto: true,
             sidebar_collapsed: false,
+            agent_panel_scope: AgentPanelScope::CurrentWorkspace,
             confirm_close: true,
             accent: Color::Cyan,
             sound: SoundConfig {

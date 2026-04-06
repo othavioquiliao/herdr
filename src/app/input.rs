@@ -27,8 +27,8 @@ enum WheelRouting {
 const WORKSPACE_DRAG_THRESHOLD: u16 = 1;
 
 use super::state::{
-    key_matches, AppState, ContextMenuKind, ContextMenuState, DragState, DragTarget, MenuListState,
-    Mode, WorkspacePressState,
+    key_matches, AgentPanelScope, AppState, ContextMenuKind, ContextMenuState, DragState,
+    DragTarget, MenuListState, Mode, WorkspacePressState,
 };
 use super::App;
 
@@ -2025,6 +2025,14 @@ impl AppState {
                         return None;
                     }
 
+                    if self.on_agent_panel_scope_toggle(mouse.column, mouse.row) {
+                        self.agent_panel_scope = match self.agent_panel_scope {
+                            AgentPanelScope::CurrentWorkspace => AgentPanelScope::AllWorkspaces,
+                            AgentPanelScope::AllWorkspaces => AgentPanelScope::CurrentWorkspace,
+                        };
+                        return None;
+                    }
+
                     if let Some((ws_idx, tab_idx, pane_id)) = self.agent_detail_target_at(mouse.row)
                     {
                         self.switch_workspace(ws_idx);
@@ -2458,29 +2466,26 @@ impl AppState {
         best.map(|(insert_idx, _)| insert_idx)
     }
 
+    fn on_agent_panel_scope_toggle(&self, col: u16, row: u16) -> bool {
+        if self.sidebar_collapsed {
+            return false;
+        }
+
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(self.view.sidebar_rect);
+        let rect = crate::ui::agent_panel_toggle_rect(detail_area, self.agent_panel_scope);
+        rect.width > 0
+            && col >= rect.x
+            && col < rect.x + rect.width
+            && row >= rect.y
+            && row < rect.y + rect.height
+    }
+
     fn agent_detail_target_at(&self, row: u16) -> Option<(usize, usize, crate::layout::PaneId)> {
         if self.sidebar_collapsed {
             return None;
         }
 
-        let content = Rect::new(
-            self.view.sidebar_rect.x,
-            self.view.sidebar_rect.y,
-            self.view.sidebar_rect.width.saturating_sub(1),
-            self.view.sidebar_rect.height,
-        );
-        if content.width == 0 || content.height == 0 {
-            return None;
-        }
-
-        let total_h = content.height as usize;
-        let ws_h = (total_h + 1) / 2;
-        let detail_area = Rect::new(
-            content.x,
-            content.y + ws_h as u16,
-            content.width,
-            total_h.saturating_sub(ws_h) as u16,
-        );
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(self.view.sidebar_rect);
         if detail_area.height < 4
             || row < detail_area.y + 3
             || row >= detail_area.y + detail_area.height
@@ -2488,17 +2493,15 @@ impl AppState {
             return None;
         }
 
-        let detail_ws_idx = self.collapsed_detail_workspace_idx()?;
-        let ws = self.workspaces.get(detail_ws_idx)?;
         let relative_row = row - (detail_area.y + 3);
         let entry_height = 3;
         if relative_row % entry_height == 2 {
             return None;
         }
         let detail_idx = (relative_row / entry_height) as usize;
-        let details = ws.pane_details();
+        let details = crate::ui::agent_panel_entries(self);
         let detail = details.get(detail_idx)?;
-        Some((detail_ws_idx, detail.tab_idx, detail.pane_id))
+        Some((detail.ws_idx, detail.tab_idx, detail.pane_id))
     }
 
     fn screen_rect(&self) -> Rect {
@@ -3510,6 +3513,66 @@ mod tests {
             second_pane
         );
         assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn clicking_agent_panel_toggle_switches_scope() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(app.state.view.sidebar_rect);
+        let toggle = crate::ui::agent_panel_toggle_rect(detail_area, app.state.agent_panel_scope);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            toggle.x,
+            toggle.y,
+        ));
+
+        assert_eq!(app.state.agent_panel_scope, AgentPanelScope::AllWorkspaces);
+    }
+
+    #[test]
+    fn clicking_all_workspaces_agent_row_switches_to_correct_workspace() {
+        let mut app = app_for_mouse_test();
+        let mut first = Workspace::test_new("one");
+        let first_pane = first.tabs[0].root_pane;
+        first.tabs[0]
+            .panes
+            .get_mut(&first_pane)
+            .unwrap()
+            .detected_agent = Some(Agent::Pi);
+
+        let mut second = Workspace::test_new("two");
+        let second_pane = second.tabs[0].root_pane;
+        second.tabs[0]
+            .panes
+            .get_mut(&second_pane)
+            .unwrap()
+            .detected_agent = Some(Agent::Claude);
+
+        app.state.workspaces = vec![first, second];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        app.state.agent_panel_scope = AgentPanelScope::AllWorkspaces;
+
+        let (_, detail_area) = crate::ui::expanded_sidebar_sections(app.state.view.sidebar_rect);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            detail_area.x + 2,
+            detail_area.y + 6,
+        ));
+
+        assert_eq!(app.state.active, Some(1));
+        assert_eq!(app.state.selected, 1);
+        assert_eq!(app.state.workspaces[1].active_tab, 0);
+        assert_eq!(
+            app.state.workspaces[1].tabs[0].layout.focused(),
+            second_pane
+        );
     }
 
     #[test]

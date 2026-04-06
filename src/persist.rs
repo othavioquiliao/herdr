@@ -30,6 +30,8 @@ pub struct SessionSnapshot {
     pub workspaces: Vec<WorkspaceSnapshot>,
     pub active: Option<usize>,
     pub selected: usize,
+    #[serde(default)]
+    pub agent_panel_scope: crate::app::state::AgentPanelScope,
 }
 
 #[derive(Serialize)]
@@ -215,12 +217,14 @@ pub fn capture(
     workspaces: &[Workspace],
     active: Option<usize>,
     selected: usize,
+    agent_panel_scope: crate::app::state::AgentPanelScope,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
         workspaces: workspaces.iter().map(capture_workspace).collect(),
         active,
         selected,
+        agent_panel_scope,
     }
 }
 
@@ -556,6 +560,7 @@ mod tests {
             workspaces: vec![],
             active: None,
             selected: 0,
+            agent_panel_scope: crate::app::state::AgentPanelScope::CurrentWorkspace,
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored: SessionSnapshot = serde_json::from_str(&json).unwrap();
@@ -624,6 +629,7 @@ mod tests {
             }],
             active: Some(0),
             selected: 0,
+            agent_panel_scope: crate::app::state::AgentPanelScope::CurrentWorkspace,
             version: SNAPSHOT_VERSION,
         };
 
@@ -641,6 +647,28 @@ mod tests {
         assert_eq!(
             restored.workspaces[0].tabs[0].panes[&0].cwd,
             PathBuf::from("/home/can/Projects/herdr")
+        );
+        assert_eq!(
+            restored.agent_panel_scope,
+            crate::app::state::AgentPanelScope::CurrentWorkspace
+        );
+    }
+
+    #[test]
+    fn old_snapshot_defaults_agent_panel_scope() {
+        let json = serde_json::json!({
+            "version": SNAPSHOT_VERSION,
+            "workspaces": [],
+            "active": null,
+            "selected": 0
+        })
+        .to_string();
+
+        let restored: SessionSnapshot = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            restored.agent_panel_scope,
+            crate::app::state::AgentPanelScope::CurrentWorkspace
         );
     }
 

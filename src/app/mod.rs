@@ -157,8 +157,13 @@ impl App {
         let render_dirty = Arc::new(AtomicBool::new(false));
 
         // Try to restore previous session
-        let (workspaces, active, selected) = if no_session {
-            (Vec::new(), None, 0)
+        let (workspaces, active, selected, agent_panel_scope) = if no_session {
+            (
+                Vec::new(),
+                None,
+                0,
+                state::AgentPanelScope::CurrentWorkspace,
+            )
         } else if let Some(snap) = crate::persist::load() {
             let ws = crate::persist::restore(
                 &snap,
@@ -170,15 +175,20 @@ impl App {
             );
             if ws.is_empty() {
                 info!("session file found but no workspaces restored");
-                (Vec::new(), None, 0)
+                (Vec::new(), None, 0, snap.agent_panel_scope)
             } else {
                 info!(count = ws.len(), "session restored");
                 let active = snap.active.filter(|&i| i < ws.len());
                 let selected = snap.selected.min(ws.len().saturating_sub(1));
-                (ws, active, selected)
+                (ws, active, selected, snap.agent_panel_scope)
             }
         } else {
-            (Vec::new(), None, 0)
+            (
+                Vec::new(),
+                None,
+                0,
+                state::AgentPanelScope::CurrentWorkspace,
+            )
         };
 
         let latest_release_notes_available = crate::release_notes::load_latest().is_some();
@@ -240,6 +250,7 @@ impl App {
             sidebar_width: config.ui.sidebar_width,
             sidebar_width_auto: true,
             sidebar_collapsed: false,
+            agent_panel_scope,
             confirm_close: config.ui.confirm_close,
             accent: crate::config::parse_color(&config.ui.accent),
             sound: config.ui.sound.clone(),
@@ -422,6 +433,7 @@ impl App {
                 &self.state.workspaces,
                 self.state.active,
                 self.state.selected,
+                self.state.agent_panel_scope,
             );
             crate::persist::save(&snap);
         }

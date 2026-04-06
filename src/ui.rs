@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::state::{ToastKind, ToastNotification};
+use crate::app::state::{AgentPanelScope, ToastKind, ToastNotification};
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
 use crate::layout::PaneInfo;
@@ -25,6 +25,183 @@ fn spinner_frame(tick: u32) -> &'static str {
 }
 
 use crate::app::state::Palette;
+
+pub(crate) struct AgentPanelEntry {
+    pub ws_idx: usize,
+    pub tab_idx: usize,
+    pub pane_id: crate::layout::PaneId,
+    pub primary_label: String,
+    pub primary_tab_label: Option<String>,
+    pub agent_label: Option<String>,
+    pub state: AgentState,
+    pub seen: bool,
+}
+
+pub(crate) fn expanded_sidebar_sections(area: Rect) -> (Rect, Rect) {
+    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
+    if content.width == 0 || content.height == 0 {
+        return (Rect::default(), Rect::default());
+    }
+
+    let total_h = content.height as usize;
+    let ws_h = (total_h + 1) / 2;
+    let detail_h = total_h.saturating_sub(ws_h);
+
+    let ws_area = Rect::new(content.x, content.y, content.width, ws_h as u16);
+    let detail_area = Rect::new(
+        content.x,
+        content.y + ws_h as u16,
+        content.width,
+        detail_h as u16,
+    );
+    (ws_area, detail_area)
+}
+
+fn agent_panel_current_workspace_idx(app: &AppState) -> Option<usize> {
+    if matches!(
+        app.mode,
+        Mode::Navigate
+            | Mode::RenameWorkspace
+            | Mode::Resize
+            | Mode::ConfirmClose
+            | Mode::ContextMenu
+            | Mode::Settings
+            | Mode::GlobalMenu
+            | Mode::KeybindHelp
+    ) {
+        Some(app.selected)
+    } else {
+        app.active
+    }
+}
+
+fn agent_panel_toggle_label(scope: AgentPanelScope) -> &'static str {
+    match scope {
+        AgentPanelScope::CurrentWorkspace => "current",
+        AgentPanelScope::AllWorkspaces => "all",
+    }
+}
+
+pub(crate) fn agent_panel_toggle_rect(area: Rect, scope: AgentPanelScope) -> Rect {
+    if area.width == 0 || area.height < 2 {
+        return Rect::default();
+    }
+
+    let label = agent_panel_toggle_label(scope);
+    let width = label.chars().count() as u16;
+    Rect::new(
+        area.x + area.width.saturating_sub(width),
+        area.y + 1,
+        width,
+        1,
+    )
+}
+
+pub(crate) fn agent_panel_entries(app: &AppState) -> Vec<AgentPanelEntry> {
+    match app.agent_panel_scope {
+        AgentPanelScope::CurrentWorkspace => {
+            let Some(ws_idx) = agent_panel_current_workspace_idx(app) else {
+                return Vec::new();
+            };
+            let Some(ws) = app.workspaces.get(ws_idx) else {
+                return Vec::new();
+            };
+            ws.pane_details()
+                .into_iter()
+                .map(|detail| AgentPanelEntry {
+                    ws_idx,
+                    tab_idx: detail.tab_idx,
+                    pane_id: detail.pane_id,
+                    primary_label: detail.label,
+                    primary_tab_label: None,
+                    agent_label: None,
+                    state: detail.state,
+                    seen: detail.seen,
+                })
+                .collect()
+        }
+        AgentPanelScope::AllWorkspaces => app
+            .workspaces
+            .iter()
+            .enumerate()
+            .flat_map(|(ws_idx, ws)| {
+                let multi_tab = ws.tabs.len() > 1;
+                let workspace_label = ws.display_name();
+                ws.pane_details()
+                    .into_iter()
+                    .map(move |detail| AgentPanelEntry {
+                        ws_idx,
+                        tab_idx: detail.tab_idx,
+                        pane_id: detail.pane_id,
+                        primary_label: workspace_label.clone(),
+                        primary_tab_label: multi_tab.then_some(detail.tab_label),
+                        agent_label: Some(detail.agent_label),
+                        state: detail.state,
+                        seen: detail.seen,
+                    })
+            })
+            .collect(),
+    }
+}
+
+fn truncate_text(text: &str, max_width: usize) -> String {
+    let len = text.chars().count();
+    if len <= max_width {
+        return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+    let prefix: String = text.chars().take(max_width.saturating_sub(1)).collect();
+    format!("{prefix}…")
+}
+
+fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -> String {
+    let Some(tab_label) = entry.primary_tab_label.as_deref() else {
+        return truncate_text(&entry.primary_label, max_width);
+    };
+
+    let separator = " · ";
+    let separator_width = separator.chars().count();
+    if max_width <= separator_width + 2 {
+        return truncate_text(
+            &format!("{}{}{}", entry.primary_label, separator, tab_label),
+            max_width,
+        );
+    }
+
+    let available = max_width.saturating_sub(separator_width);
+    let min_tab = 4.min(available.saturating_sub(1)).max(1);
+    let preferred_workspace = ((available * 2) / 3).max(1);
+    let mut workspace_budget = preferred_workspace
+        .min(available.saturating_sub(min_tab))
+        .max(1);
+    let mut tab_budget = available.saturating_sub(workspace_budget);
+
+    let workspace_len = entry.primary_label.chars().count();
+    let tab_len = tab_label.chars().count();
+
+    if workspace_len < workspace_budget {
+        let spare = workspace_budget - workspace_len;
+        workspace_budget = workspace_len;
+        tab_budget = (tab_budget + spare).min(available.saturating_sub(workspace_budget));
+    }
+    if tab_len < tab_budget {
+        let spare = tab_budget - tab_len;
+        tab_budget = tab_len;
+        workspace_budget = (workspace_budget + spare).min(available.saturating_sub(tab_budget));
+    }
+
+    format!(
+        "{}{}{}",
+        truncate_text(&entry.primary_label, workspace_budget),
+        separator,
+        truncate_text(tab_label, tab_budget)
+    )
+}
 
 /// Compute view geometry and reconcile pane sizes.
 /// Called before render to separate mutation from drawing.
@@ -621,37 +798,13 @@ fn render_sidebar(app: &AppState, frame: &mut Frame, area: Rect) {
         buf[(sep_x, y)].set_style(sep_style);
     }
 
-    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
-
-    // Determine which workspace to show in the detail panel
-    let detail_ws_idx = if is_navigating {
-        Some(app.selected)
-    } else {
-        app.active
-    };
-
-    // Split sidebar in half: workspaces on top, agents on bottom
-    let total_h = content.height as usize;
-    let ws_h = (total_h + 1) / 2; // top half (ceiling)
-    let detail_h = total_h.saturating_sub(ws_h);
-
-    let ws_area = Rect::new(content.x, content.y, content.width, ws_h as u16);
-    let detail_area = Rect::new(
-        content.x,
-        content.y + ws_h as u16,
-        content.width,
-        detail_h as u16,
-    );
+    let (ws_area, detail_area) = expanded_sidebar_sections(area);
 
     // --- Top section: Workspaces ---
     render_workspace_list(app, frame, ws_area, is_navigating);
 
     // --- Bottom section: Agent detail ---
-    if let Some(ws_idx) = detail_ws_idx {
-        if let Some(ws) = app.workspaces.get(ws_idx) {
-            render_agent_detail(app, frame, detail_area, ws);
-        }
-    }
+    render_agent_detail(app, frame, detail_area);
 
     render_sidebar_toggle(app, frame, area, false, p);
 }
@@ -848,12 +1001,7 @@ fn render_workspace_list(app: &AppState, frame: &mut Frame, area: Rect, is_navig
 }
 
 /// Render the agent detail panel in the bottom section of the sidebar.
-fn render_agent_detail(
-    app: &AppState,
-    frame: &mut Frame,
-    area: Rect,
-    ws: &crate::workspace::Workspace,
-) {
+fn render_agent_detail(app: &AppState, frame: &mut Frame, area: Rect) {
     let p = &app.palette;
 
     if area.height < 3 {
@@ -870,7 +1018,6 @@ fn render_agent_detail(
     );
     row_y += 1;
 
-    // Section header
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             " agents",
@@ -878,14 +1025,23 @@ fn render_agent_detail(
         )])),
         Rect::new(area.x, row_y, area.width, 1),
     );
+    let toggle_rect = agent_panel_toggle_rect(area, app.agent_panel_scope);
+    if toggle_rect != Rect::default() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                agent_panel_toggle_label(app.agent_panel_scope),
+                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+            ))
+            .alignment(Alignment::Right),
+            toggle_rect,
+        );
+    }
     row_y += 1;
 
     // Blank line for breathing room
     row_y += 1;
 
-    // Per-pane agent entries, sorted by urgency
-    let details = ws.pane_details();
-    for detail in &details {
+    for detail in &agent_panel_entries(app) {
         if row_y + 1 >= area.y + area.height {
             break;
         }
@@ -896,12 +1052,15 @@ fn render_agent_detail(
 
         let name_style = Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD);
         let status_style = Style::default().fg(label_color).add_modifier(Modifier::DIM);
+        let agent_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
 
+        let primary_label =
+            format_agent_panel_primary_label(detail, area.width.saturating_sub(3) as usize);
         let name_line = Line::from(vec![
             Span::styled(" ", Style::default()),
             Span::styled(icon, icon_style),
             Span::styled(" ", Style::default()),
-            Span::styled(&detail.label, name_style),
+            Span::styled(primary_label, name_style),
         ]);
         frame.render_widget(
             Paragraph::new(name_line),
@@ -913,12 +1072,16 @@ fn render_agent_detail(
             break;
         }
 
-        let status_line = Line::from(vec![
+        let mut status_spans = vec![
             Span::styled("   ", Style::default()),
             Span::styled(label, status_style),
-        ]);
+        ];
+        if let Some(agent_label) = &detail.agent_label {
+            status_spans.push(Span::styled(" · ", agent_style));
+            status_spans.push(Span::styled(agent_label, agent_style));
+        }
         frame.render_widget(
-            Paragraph::new(status_line),
+            Paragraph::new(Line::from(status_spans)),
             Rect::new(area.x, row_y, area.width, 1),
         );
         row_y += 1;
@@ -2818,6 +2981,59 @@ fn _build_hints(items: &[(&str, &str)], key_style: Style, dim_style: Style) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{detect::Agent, workspace::Workspace};
+
+    #[test]
+    fn all_workspaces_agent_panel_entries_use_workspace_and_optional_tab_labels() {
+        let mut app = crate::app::state::AppState::test_new();
+        let mut first = Workspace::test_new("one");
+        let first_pane = first.tabs[0].root_pane;
+        first.tabs[0]
+            .panes
+            .get_mut(&first_pane)
+            .unwrap()
+            .detected_agent = Some(Agent::Pi);
+
+        let mut second = Workspace::test_new("two");
+        let second_tab = second.test_add_tab(Some("logs"));
+        let second_pane = second.tabs[second_tab].root_pane;
+        second.tabs[second_tab]
+            .panes
+            .get_mut(&second_pane)
+            .unwrap()
+            .detected_agent = Some(Agent::Claude);
+
+        app.workspaces = vec![first, second];
+        app.active = Some(0);
+        app.selected = 0;
+        app.agent_panel_scope = AgentPanelScope::AllWorkspaces;
+
+        let entries = agent_panel_entries(&app);
+        assert_eq!(entries[0].primary_label, "one");
+        assert!(entries[0].primary_tab_label.is_none());
+        assert_eq!(entries[0].agent_label.as_deref(), Some("pi"));
+        assert_eq!(entries[1].primary_label, "two");
+        assert_eq!(entries[1].primary_tab_label.as_deref(), Some("logs"));
+        assert_eq!(entries[1].agent_label.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn all_workspaces_primary_label_truncates_workspace_and_tab() {
+        let entry = AgentPanelEntry {
+            ws_idx: 0,
+            tab_idx: 0,
+            pane_id: crate::layout::PaneId::from_raw(1),
+            primary_label: "agent-browser".into(),
+            primary_tab_label: Some("test-escalation".into()),
+            agent_label: Some("claude".into()),
+            state: AgentState::Idle,
+            seen: true,
+        };
+
+        let label = format_agent_panel_primary_label(&entry, 18);
+
+        assert_eq!(label, "agent-bro… · test…");
+    }
 
     #[test]
     fn pane_scrollbar_rect_uses_rightmost_inner_column() {
