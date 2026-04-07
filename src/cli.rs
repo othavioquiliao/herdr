@@ -7,9 +7,10 @@ use serde::Serialize;
 use crate::api;
 use crate::api::schema::{
     EmptyParams, Method, OutputMatch, PaneAgentState, PaneListParams, PaneReadParams,
-    PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneTarget, PaneWaitForOutputParams,
-    ReadSource, Request, SplitDirection, Subscription, TabCreateParams, TabListParams,
-    TabRenameParams, TabTarget, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget,
+    PaneSendInputParams, PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneTarget,
+    PaneWaitForOutputParams, ReadSource, Request, SplitDirection, Subscription, TabCreateParams,
+    TabListParams, TabRenameParams, TabTarget, WorkspaceCreateParams, WorkspaceRenameParams,
+    WorkspaceTarget,
 };
 
 pub enum CommandOutcome {
@@ -596,8 +597,12 @@ fn pane_run(args: &[String]) -> std::io::Result<i32> {
     }
 
     let pane_id = normalize_pane_id(&args[0]);
-    let text = format!("{}\r", args[1..].join(" "));
-    send_ok_request(Method::PaneSendText(PaneSendTextParams { pane_id, text }))
+    let text = args[1..].join(" ");
+    send_ok_request(Method::PaneSendInput(PaneSendInputParams {
+        pane_id,
+        text,
+        keys: vec!["Enter".into()],
+    }))
 }
 
 fn integration_install(args: &[String]) -> std::io::Result<i32> {

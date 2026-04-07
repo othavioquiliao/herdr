@@ -336,6 +336,28 @@ fn workspace_list_and_create_round_trip() {
         .unwrap()
         .contains("gamma"));
 
+    let send_input = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"req_12b","method":"pane.send_input","params":{{"pane_id":"{}","text":"echo delta","keys":["Enter"]}}}}"#,
+            pane_id
+        ),
+    );
+    assert_eq!(send_input["result"]["type"], "ok");
+
+    let waited_delta = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"req_12c","method":"pane.wait_for_output","params":{{"pane_id":"{}","source":"recent","lines":40,"match":{{"type":"substring","value":"delta"}},"timeout_ms":2000}}}}"#,
+            pane_id
+        ),
+    );
+    assert_eq!(waited_delta["result"]["type"], "output_matched");
+    assert!(waited_delta["result"]["matched_line"]
+        .as_str()
+        .unwrap()
+        .contains("delta"));
+
     let waited_regex = send_request(
         &socket_path,
         &format!(

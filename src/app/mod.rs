@@ -1711,6 +1711,70 @@ impl App {
                     result: ResponseResult::Ok {},
                 }
             }
+            Method::PaneSendInput(params) => {
+                let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {} not found", params.pane_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
+                    return serde_json::to_string(&ErrorResponse {
+                        id: request.id,
+                        error: ErrorBody {
+                            code: "pane_not_found".into(),
+                            message: format!("pane {} not found", params.pane_id),
+                        },
+                    })
+                    .unwrap();
+                };
+                let encoded_keys = match encode_api_keys(runtime, &params.keys) {
+                    Ok(encoded_keys) => encoded_keys,
+                    Err(key) => {
+                        return serde_json::to_string(&ErrorResponse {
+                            id: request.id,
+                            error: ErrorBody {
+                                code: "invalid_key".into(),
+                                message: format!("unsupported key {key}"),
+                            },
+                        })
+                        .unwrap();
+                    }
+                };
+                if !params.text.is_empty() {
+                    let text_bytes = encode_api_text(runtime, &params.text);
+                    if let Err(err) = runtime.try_send_bytes(Bytes::from(text_bytes)) {
+                        return serde_json::to_string(&ErrorResponse {
+                            id: request.id,
+                            error: ErrorBody {
+                                code: "pane_send_failed".into(),
+                                message: err.to_string(),
+                            },
+                        })
+                        .unwrap();
+                    }
+                }
+                for bytes in encoded_keys {
+                    if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
+                        return serde_json::to_string(&ErrorResponse {
+                            id: request.id,
+                            error: ErrorBody {
+                                code: "pane_send_failed".into(),
+                                message: err.to_string(),
+                            },
+                        })
+                        .unwrap();
+                    }
+                }
+                SuccessResponse {
+                    id: request.id,
+                    result: ResponseResult::Ok {},
+                }
+            }
             Method::PaneClose(target) => {
                 let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
                     return serde_json::to_string(&ErrorResponse {
@@ -1784,18 +1848,20 @@ impl App {
                     })
                     .unwrap();
                 };
-                for key in params.keys {
-                    let Some(key_event) = parse_api_key(&key) else {
+                let encoded_keys = match encode_api_keys(runtime, &params.keys) {
+                    Ok(encoded_keys) => encoded_keys,
+                    Err(key) => {
                         return serde_json::to_string(&ErrorResponse {
                             id: request.id,
                             error: ErrorBody {
                                 code: "invalid_key".into(),
-                                message: format!("unsupported key {}", key),
+                                message: format!("unsupported key {key}"),
                             },
                         })
                         .unwrap();
-                    };
-                    let bytes = runtime.encode_terminal_key(key_event.into());
+                    }
+                };
+                for bytes in encoded_keys {
                     if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
                         return serde_json::to_string(&ErrorResponse {
                             id: request.id,
@@ -2192,6 +2258,32 @@ fn parse_api_key(key: &str) -> Option<crossterm::event::KeyEvent> {
             .map(|ch| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty())),
         _ => None,
     }
+}
+
+fn encode_api_text(runtime: &crate::pane::PaneRuntime, text: &str) -> Vec<u8> {
+    let bracketed = runtime
+        .input_state()
+        .map(|state| state.bracketed_paste)
+        .unwrap_or(false);
+    if bracketed {
+        format!("\x1b[200~{text}\x1b[201~").into_bytes()
+    } else {
+        text.as_bytes().to_vec()
+    }
+}
+
+fn encode_api_keys(
+    runtime: &crate::pane::PaneRuntime,
+    keys: &[String],
+) -> Result<Vec<Vec<u8>>, String> {
+    let mut encoded_keys = Vec::with_capacity(keys.len());
+    for key in keys {
+        let Some(key_event) = parse_api_key(key) else {
+            return Err(key.clone());
+        };
+        encoded_keys.push(runtime.encode_terminal_key(key_event.into()));
+    }
+    Ok(encoded_keys)
 }
 
 fn detect_state_from_api(state: crate::api::schema::PaneAgentState) -> crate::detect::AgentState {

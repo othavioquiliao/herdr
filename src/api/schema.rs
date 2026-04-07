@@ -46,6 +46,8 @@ pub enum Method {
     PaneSendText(PaneSendTextParams),
     #[serde(rename = "pane.send_keys")]
     PaneSendKeys(PaneSendKeysParams),
+    #[serde(rename = "pane.send_input")]
+    PaneSendInput(PaneSendInputParams),
     #[serde(rename = "pane.read")]
     PaneRead(PaneReadParams),
     #[serde(rename = "pane.report_agent")]
@@ -155,6 +157,15 @@ pub struct PaneSendTextParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSendKeysParams {
     pub pane_id: String,
+    pub keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSendInputParams {
+    pub pane_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<String>,
 }
 
@@ -690,6 +701,27 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("text"));
+    }
+
+    #[test]
+    fn pane_send_input_defaults_to_empty_text_and_keys() {
+        let json = r#"
+        {
+            "id": "req_1",
+            "method": "pane.send_input",
+            "params": {
+                "pane_id": "p_1"
+            }
+        }
+        "#;
+
+        let request: Request = serde_json::from_str(json).unwrap();
+        let Method::PaneSendInput(params) = request.method else {
+            panic!("wrong method parsed");
+        };
+        assert_eq!(params.pane_id, "p_1");
+        assert!(params.text.is_empty());
+        assert!(params.keys.is_empty());
     }
 
     #[test]

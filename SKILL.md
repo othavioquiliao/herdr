@@ -165,7 +165,7 @@ press Enter or other keys:
 herdr pane send-keys 1-1 Enter
 ```
 
-`pane run` appends a trailing carriage return (`\r`) to the text so the command executes:
+`pane run` sends the text and then a real `Enter` key in one request:
 
 ```bash
 herdr pane run 1-1 "echo hello"

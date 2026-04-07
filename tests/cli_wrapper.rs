@@ -126,7 +126,7 @@ fn send_request(socket_path: &Path, json: &str) -> serde_json::Value {
 }
 
 #[test]
-fn pane_run_sends_one_send_text_request_with_trailing_carriage_return() {
+fn pane_run_sends_one_send_input_request_with_enter_key() {
     let base = unique_test_dir();
     fs::create_dir_all(&base).unwrap();
     let socket_path = base.join("herdr.sock");
@@ -179,9 +179,13 @@ fn pane_run_sends_one_send_text_request_with_trailing_carriage_return() {
 
     let (first_line, second_line) = server.join().unwrap();
     let first_request: serde_json::Value = serde_json::from_str(&first_line).unwrap();
-    assert_eq!(first_request["method"], "pane.send_text");
+    assert_eq!(first_request["method"], "pane.send_input");
     assert_eq!(first_request["params"]["pane_id"], "1-1");
-    assert_eq!(first_request["params"]["text"], "echo hello\r");
+    assert_eq!(first_request["params"]["text"], "echo hello");
+    assert_eq!(
+        first_request["params"]["keys"],
+        serde_json::json!(["Enter"])
+    );
     assert!(
         second_line.is_none(),
         "pane run sent an unexpected second request: {:?}",

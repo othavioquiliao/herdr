@@ -186,6 +186,7 @@ agent states are:
 | `pane.split` | split a pane and create a sibling pane | `pane_info` |
 | `pane.send_text` | send literal text without Enter | `ok` |
 | `pane.send_keys` | send keypresses like `Enter` | `ok` |
+| `pane.send_input` | send literal text plus keypresses in order | `ok` |
 | `pane.close` | close a pane | `ok` |
 | `pane.wait_for_output` | one-shot blocking wait for text | `output_matched` |
 | `events.subscribe` | start a long-lived subscription stream | `subscription_started` ack |
@@ -533,6 +534,22 @@ params:
 
 use this after `pane.send_text` when you want to submit a command.
 
+### `pane.send_input`
+
+params:
+
+```json
+{
+  "pane_id": "1-1",
+  "text": "bun run dev",
+  "keys": ["Enter"]
+}
+```
+
+this sends text plus encoded keypresses in order within one request. when bracketed paste is enabled in the pane, the text portion is sent as a paste payload before the keys. use this when you need `text + Enter` to behave more like a real keypress sequence than `pane.send_text` with a literal trailing `\r`.
+
+`text` and `keys` are both optional, but at least one should usually be present.
+
 ### `pane.close`
 
 params:
@@ -830,7 +847,7 @@ herdr wait agent-state <pane_id> --state <idle|working|blocked|unknown> [--timeo
 - `pane read --source recent-unwrapped` returns recent terminal text with soft wraps joined back together
 - `pane send-text`, `pane send-keys`, and `pane run` print nothing on success
 - list/get/create/split/wait commands print json on success
-- `pane run` is a convenience wrapper for `pane send-text` with a trailing carriage return (`\r`)
+- `pane run` is a convenience wrapper for `pane.send_input` with the command text followed by a real `Enter` keypress
 - `wait agent-state` is a cli convenience built on top of event subscriptions
 - `--raw` disables ansi stripping for `pane read` and `wait output`
 - `wait output --source recent` matches against unwrapped recent terminal text by default, so pane width and soft wrapping do not break matches
@@ -860,7 +877,7 @@ herdr pane read 1-1 --source recent --lines 80
 
 ## behavior notes and gotchas
 
-- `pane.send_text` sends literal text only. if you want to execute a command, follow it with `pane.send_keys` and `Enter`, or use cli `pane run`, which appends a trailing carriage return (`\r`).
+- `pane.send_text` sends literal text only. if you want to execute a command, follow it with `pane.send_keys` and `Enter`, use `pane.send_input` for ordered `text + keypress` input, or use cli `pane run`, which sends the text and then a real Enter key in one request.
 - `pane.read` and `pane.wait_for_output` strip ansi by default.
 - `pane.output_matched` subscriptions fire on transitions into a matching state; they do not repeatedly spam the same still-visible match on every poll.
 - closing the socket connection ends the subscription.
