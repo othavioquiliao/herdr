@@ -287,6 +287,7 @@ struct ProcessBytesResult {
 
 struct GhosttyPaneTerminal {
     core: Mutex<GhosttyPaneCore>,
+    key_encoder: Mutex<crate::ghostty::KeyEncoder>,
 }
 
 struct GhosttyPaneCore {
@@ -412,11 +413,15 @@ impl GhosttyPaneTerminal {
 
         let render_state =
             crate::ghostty::RenderState::new().map_err(|e| std::io::Error::other(e.to_string()))?;
+        let mut key_encoder =
+            crate::ghostty::KeyEncoder::new().map_err(|e| std::io::Error::other(e.to_string()))?;
+        key_encoder.set_from_terminal(&terminal);
         Ok(Self {
             core: Mutex::new(GhosttyPaneCore {
                 terminal,
                 render_state,
             }),
+            key_encoder: Mutex::new(key_encoder),
         })
     }
 
@@ -453,6 +458,9 @@ impl GhosttyPaneTerminal {
         };
 
         core.terminal.write(bytes);
+        if let Ok(mut key_encoder) = self.key_encoder.lock() {
+            key_encoder.set_from_terminal(&core.terminal);
+        }
         let synchronized_output = core
             .terminal
             .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
@@ -587,19 +595,13 @@ impl GhosttyPaneTerminal {
             return crate::input::encode_terminal_key(key, protocol);
         }
 
-        let Ok(core) = self.core.lock() else {
-            return crate::input::encode_terminal_key(key, protocol);
-        };
-
         let Some(event) = ghostty_key_event_from_terminal_key(key) else {
             return crate::input::encode_terminal_key(key, protocol);
         };
 
-        let mut encoder = match crate::ghostty::KeyEncoder::new() {
-            Ok(encoder) => encoder,
-            Err(_) => return crate::input::encode_terminal_key(key, protocol),
+        let Ok(mut encoder) = self.key_encoder.lock() else {
+            return crate::input::encode_terminal_key(key, protocol);
         };
-        encoder.set_from_terminal(&core.terminal);
         match encoder.encode(&event) {
             Ok(bytes) if !bytes.is_empty() => bytes,
             Ok(_) | Err(_) => crate::input::encode_terminal_key(key, protocol),
@@ -1916,6 +1918,88 @@ mod tests {
         );
 
         assert_eq!(encoded, b"\x1bOA");
+    }
+
+    #[test]
+    fn ghostty_key_encoder_updates_after_terminal_mode_changes() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        let pane_id = PaneId::from_raw(1);
+
+        let before = pane.encode_terminal_key(
+            crate::input::TerminalKey::new(
+                crossterm::event::KeyCode::Up,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            crate::input::KeyboardProtocol::Legacy,
+        );
+        assert_eq!(before, b"\x1b[A");
+
+        pane.process_pty_bytes(pane_id, b"\x1b[?1h", &tx);
+
+        let after = pane.encode_terminal_key(
+            crate::input::TerminalKey::new(
+                crossterm::event::KeyCode::Up,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            crate::input::KeyboardProtocol::Legacy,
+        );
+        assert_eq!(after, b"\x1bOA");
+    }
+
+    #[test]
+    fn ghostty_key_encoder_updates_after_kitty_flag_changes() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        let pane_id = PaneId::from_raw(1);
+        let key = crate::input::TerminalKey::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
+        );
+
+        let before = pane.encode_terminal_key(key, crate::input::KeyboardProtocol::Legacy);
+        pane.process_pty_bytes(pane_id, b"\x1b[>1u", &tx);
+        let after = pane.encode_terminal_key(key, crate::input::KeyboardProtocol::Legacy);
+
+        assert_ne!(before, after);
+        assert_eq!(after, b"\x1b[13;6u");
+    }
+
+    #[test]
+    fn ghostty_key_encoders_are_isolated_per_pane() {
+        let (tx, _rx) = mpsc::channel(4);
+        let first = GhosttyPaneTerminal::new(
+            crate::ghostty::Terminal::new(80, 24, 0).unwrap(),
+            tx.clone(),
+        )
+        .unwrap();
+        let second = GhosttyPaneTerminal::new(
+            crate::ghostty::Terminal::new(80, 24, 0).unwrap(),
+            tx.clone(),
+        )
+        .unwrap();
+
+        first.process_pty_bytes(PaneId::from_raw(1), b"\x1b[?1h", &tx);
+
+        let first_encoded = first.encode_terminal_key(
+            crate::input::TerminalKey::new(
+                crossterm::event::KeyCode::Up,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            crate::input::KeyboardProtocol::Legacy,
+        );
+        let second_encoded = second.encode_terminal_key(
+            crate::input::TerminalKey::new(
+                crossterm::event::KeyCode::Up,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+            crate::input::KeyboardProtocol::Legacy,
+        );
+
+        assert_eq!(first_encoded, b"\x1bOA");
+        assert_eq!(second_encoded, b"\x1b[A");
     }
 
     #[test]

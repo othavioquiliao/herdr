@@ -797,6 +797,9 @@ impl KeyEncoder {
     }
 }
 
+// SAFETY: the opaque encoder handle is only used behind external synchronization in pane runtime.
+unsafe impl Send for KeyEncoder {}
+
 impl Drop for KeyEncoder {
     fn drop(&mut self) {
         unsafe { ffi::ghostty_key_encoder_free(self.raw) }
