@@ -11,6 +11,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+DEFAULT_LIVE_MANIFEST_URL = "https://herdr.dev/latest.json"
+
 SECTION_RE = re.compile(r"^##\s+(?:\[(?P<bracketed>[^\]]+)\]|(?P<plain>.+?))\s*$", re.MULTILINE)
 VERSION_WITH_DATE_RE = re.compile(r"^(?P<version>.+?)\s+-\s+\d{4}-\d{2}-\d{2}$")
 DEFAULT_RELEASE_REPO = "ogulcancelik/herdr"
@@ -197,6 +199,47 @@ def manifest_from_release_payload(payload: dict[str, Any], version: str) -> dict
     }
 
 
+def canonicalize_manifest(manifest: dict[str, Any], label: str) -> dict[str, Any]:
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version.strip():
+        raise ChangelogError(f"{label} is missing a string version")
+
+    notes = manifest.get("notes")
+    if not isinstance(notes, str) or not notes.strip():
+        raise ChangelogError(f"{label} is missing non-empty release notes")
+
+    assets = manifest.get("assets")
+    if not isinstance(assets, dict):
+        raise ChangelogError(f"{label} is missing an assets object")
+
+    normalized_assets: dict[str, str] = {}
+    for target in ASSET_TARGETS:
+        url = assets.get(target)
+        if not isinstance(url, str) or not url.strip():
+            raise ChangelogError(f"{label} is missing asset URL for {target}")
+        normalized_assets[target] = url.strip()
+
+    return {
+        "version": normalize_version(version),
+        "notes": notes.strip(),
+        "assets": normalized_assets,
+    }
+
+
+def ensure_manifest_matches_expected(
+    manifest: dict[str, Any],
+    expected_manifest: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    canonical_manifest = canonicalize_manifest(manifest, label)
+    canonical_expected = canonicalize_manifest(expected_manifest, "expected release manifest")
+    if canonical_manifest != canonical_expected:
+        raise ChangelogError(
+            f"{label} does not match the published GitHub release manifest for v{canonical_expected['version']}"
+        )
+    return canonical_manifest
+
+
 def load_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -249,6 +292,53 @@ def fetch_release_payload(version: str, repo: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ChangelogError("unexpected GitHub release payload shape")
     return payload
+
+
+def fetch_remote_json(url: str, label: str) -> dict[str, Any]:
+    command = [
+        "curl",
+        "-fsSL",
+        "--retry",
+        "3",
+        "--connect-timeout",
+        "10",
+        "--max-time",
+        "20",
+        url,
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or result.stdout.strip() or "unknown curl error"
+        raise ChangelogError(f"failed to fetch {label}: {stderr}")
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ChangelogError(f"invalid JSON from {label}: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise ChangelogError(f"expected JSON object from {label}")
+    return payload
+
+
+def verify_asset_urls_resolve(assets: dict[str, str], label: str) -> None:
+    for target in ASSET_TARGETS:
+        url = assets[target]
+        command = [
+            "curl",
+            "-fsSIL",
+            "--retry",
+            "3",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "30",
+            url,
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            stderr = result.stderr.strip() or result.stdout.strip() or "unknown curl error"
+            raise ChangelogError(f"failed to verify {label} asset {target}: {stderr}")
 
 
 def ensure_manifest_is_outdated(current_manifest: dict[str, Any], version: str) -> None:
@@ -321,6 +411,35 @@ def cmd_sync_latest_json(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify_release_state(args: argparse.Namespace) -> int:
+    version = normalize_version(args.version)
+    release_payload = fetch_release_payload(version, args.repo)
+    expected_manifest = manifest_from_release_payload(release_payload, version)
+
+    local_manifest = ensure_manifest_matches_expected(
+        load_json(Path(args.output)),
+        expected_manifest,
+        str(args.output),
+    )
+    print(f"GitHub release v{version}: OK")
+    print(f"local manifest ({args.output}): OK")
+
+    live_manifest = ensure_manifest_matches_expected(
+        fetch_remote_json(args.live_url, args.live_url),
+        expected_manifest,
+        args.live_url,
+    )
+    print(f"live manifest ({args.live_url}): OK")
+
+    verify_asset_urls_resolve(dict(expected_manifest["assets"]), "release")
+    print("release asset URLs: OK")
+
+    if local_manifest != live_manifest:
+        raise ChangelogError("local and live manifests disagree after individual verification")
+    print("local and live manifests agree: OK")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare and extract changelog release notes")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -345,6 +464,16 @@ def build_parser() -> argparse.ArgumentParser:
     sync_latest_json.add_argument("--repo", default=DEFAULT_RELEASE_REPO)
     sync_latest_json.add_argument("--output", default=str(DEFAULT_LATEST_JSON_PATH))
     sync_latest_json.set_defaults(func=cmd_sync_latest_json)
+
+    verify_release_state = subparsers.add_parser(
+        "verify-release-state",
+        help="Verify GitHub release, local manifest, live manifest, and asset URLs all match",
+    )
+    verify_release_state.add_argument("--version", required=True)
+    verify_release_state.add_argument("--repo", default=DEFAULT_RELEASE_REPO)
+    verify_release_state.add_argument("--output", default=str(DEFAULT_LATEST_JSON_PATH))
+    verify_release_state.add_argument("--live-url", default=DEFAULT_LIVE_MANIFEST_URL)
+    verify_release_state.set_defaults(func=cmd_verify_release_state)
 
     return parser
 

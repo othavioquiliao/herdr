@@ -6,8 +6,10 @@ import unittest
 from scripts.changelog import (
     ChangelogError,
     build_latest_json,
+    canonicalize_manifest,
     default_release_assets,
     ensure_manifest_is_outdated,
+    ensure_manifest_matches_expected,
     extract_section_body,
     manifest_from_release_payload,
     prepare_release,
@@ -128,6 +130,72 @@ class ChangelogScriptTests(unittest.TestCase):
 
     def test_ensure_manifest_is_outdated_allows_older_version(self) -> None:
         ensure_manifest_is_outdated({"version": "0.1.0"}, "0.1.1")
+
+    def test_canonicalize_manifest_requires_all_asset_targets(self) -> None:
+        with self.assertRaisesRegex(ChangelogError, "missing asset URL for macos-aarch64"):
+            canonicalize_manifest(
+                {
+                    "version": "0.1.1",
+                    "notes": "### Fixed\n- One",
+                    "assets": {
+                        "linux-x86_64": "https://example.com/linux-x86_64",
+                        "linux-aarch64": "https://example.com/linux-aarch64",
+                        "macos-x86_64": "https://example.com/macos-x86_64",
+                    },
+                },
+                "test manifest",
+            )
+
+    def test_ensure_manifest_matches_expected_normalizes_whitespace(self) -> None:
+        actual = {
+            "version": "v0.1.1",
+            "notes": "\n### Fixed\n- One\n",
+            "assets": {
+                "linux-x86_64": " https://example.com/linux-x86_64 ",
+                "linux-aarch64": "https://example.com/linux-aarch64",
+                "macos-x86_64": "https://example.com/macos-x86_64",
+                "macos-aarch64": "https://example.com/macos-aarch64",
+            },
+        }
+        expected = {
+            "version": "0.1.1",
+            "notes": "### Fixed\n- One",
+            "assets": {
+                "linux-x86_64": "https://example.com/linux-x86_64",
+                "linux-aarch64": "https://example.com/linux-aarch64",
+                "macos-x86_64": "https://example.com/macos-x86_64",
+                "macos-aarch64": "https://example.com/macos-aarch64",
+            },
+        }
+
+        canonical = ensure_manifest_matches_expected(actual, expected, "test manifest")
+        self.assertEqual(canonical, expected)
+
+    def test_ensure_manifest_matches_expected_rejects_different_notes(self) -> None:
+        with self.assertRaisesRegex(ChangelogError, "does not match the published GitHub release manifest"):
+            ensure_manifest_matches_expected(
+                {
+                    "version": "0.1.1",
+                    "notes": "### Fixed\n- Different",
+                    "assets": {
+                        "linux-x86_64": "https://example.com/linux-x86_64",
+                        "linux-aarch64": "https://example.com/linux-aarch64",
+                        "macos-x86_64": "https://example.com/macos-x86_64",
+                        "macos-aarch64": "https://example.com/macos-aarch64",
+                    },
+                },
+                {
+                    "version": "0.1.1",
+                    "notes": "### Fixed\n- One",
+                    "assets": {
+                        "linux-x86_64": "https://example.com/linux-x86_64",
+                        "linux-aarch64": "https://example.com/linux-aarch64",
+                        "macos-x86_64": "https://example.com/macos-x86_64",
+                        "macos-aarch64": "https://example.com/macos-aarch64",
+                    },
+                },
+                "test manifest",
+            )
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ just check
 just release 0.x.y
 # wait for the GitHub release and all four binary assets to exist
 just update-latest-json 0.x.y
+just verify-release-state 0.x.y
 ```
 
 `just release 0.x.y` prepares the changelog entry, bumps `Cargo.toml`, runs tests, commits, tags, and pushes. GitHub Actions builds the binaries after the tag is pushed.
@@ -53,6 +54,8 @@ just update-latest-json 0.x.y
 - `herdr-macos-aarch64`
 
 It also refuses to run if `website/latest.json` is already at the same or newer version. It leaves the file unstaged and prints the next commands to review, commit, and push.
+
+`just verify-release-state 0.x.y` is the final read-only verification step. It checks that the published GitHub release, the local `website/latest.json`, the live `https://herdr.dev/latest.json`, and the release asset URLs all match the same version and manifest contents.
 
 `website/latest.json` is the shipped updater source of truth. Keep its schema aligned with `src/update.rs`:
 

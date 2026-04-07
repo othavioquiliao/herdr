@@ -46,6 +46,10 @@ release version:
 update-latest-json version:
     python3 scripts/changelog.py sync-latest-json --version {{version}} --output website/latest.json
 
+# Verify GitHub release, local manifest, live manifest, and asset URLs all agree (usage: just verify-release-state 0.1.1)
+verify-release-state version:
+    python3 scripts/changelog.py verify-release-state --version {{version}} --output website/latest.json
+
 # Print default config
 default-config:
     cargo run --release -- --default-config
