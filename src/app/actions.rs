@@ -106,6 +106,7 @@ impl AppState {
         if idx < self.workspaces.len() {
             self.active = Some(idx);
             self.selected = idx;
+            self.mark_session_dirty();
             if matches!(
                 self.agent_panel_scope,
                 crate::app::state::AgentPanelScope::CurrentWorkspace
@@ -152,6 +153,7 @@ impl AppState {
     pub fn switch_tab(&mut self, idx: usize) {
         if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
             ws.switch_tab(idx);
+            self.mark_session_dirty();
         }
     }
 
@@ -180,6 +182,8 @@ impl AppState {
             return;
         }
 
+        self.mark_session_dirty();
+
         let active_id = self.active.map(|idx| self.workspaces[idx].id.clone());
         let selected_id = self
             .workspaces
@@ -203,23 +207,23 @@ impl AppState {
     }
 
     pub fn next_tab(&mut self) {
-        if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
+        if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
             if !ws.tabs.is_empty() {
                 let next = (ws.active_tab + 1) % ws.tabs.len();
-                ws.switch_tab(next);
+                self.switch_tab(next);
             }
         }
     }
 
     pub fn previous_tab(&mut self) {
-        if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
+        if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
             if !ws.tabs.is_empty() {
                 let prev = if ws.active_tab == 0 {
                     ws.tabs.len() - 1
                 } else {
                     ws.active_tab - 1
                 };
-                ws.switch_tab(prev);
+                self.switch_tab(prev);
             }
         }
     }
@@ -228,6 +232,7 @@ impl AppState {
         if self.workspaces.is_empty() {
             return;
         }
+        self.mark_session_dirty();
         let name = self.workspaces[self.selected].display_name();
         info!(workspace = %name, "workspace closed");
         self.workspaces.remove(self.selected);
@@ -263,6 +268,7 @@ impl AppState {
                     .and_then(|ws| ws.active_tab_mut())
                 {
                     tab.layout.focus_pane(target);
+                    self.mark_session_dirty();
                 }
             }
         }
@@ -281,6 +287,7 @@ impl AppState {
                 .and_then(|ws| ws.active_tab_mut())
             {
                 tab.layout.resize_focused(direction, 0.05, area);
+                self.mark_session_dirty();
             }
         }
     }
@@ -296,6 +303,7 @@ impl AppState {
             } else {
                 tab.layout.focus_next();
             }
+            self.mark_session_dirty();
         }
     }
 
@@ -307,11 +315,13 @@ impl AppState {
         {
             if tab.layout.pane_count() > 1 {
                 tab.zoomed = !tab.zoomed;
+                self.mark_session_dirty();
             }
         }
     }
 
     pub fn close_pane(&mut self) {
+        self.mark_session_dirty();
         let should_close_workspace = self
             .active
             .and_then(|i| self.workspaces.get_mut(i))
@@ -322,6 +332,7 @@ impl AppState {
     }
 
     pub fn close_tab(&mut self) {
+        self.mark_session_dirty();
         let should_close_workspace = self
             .active
             .and_then(|i| self.workspaces.get(i))
@@ -530,6 +541,7 @@ impl AppState {
             let ws = &mut self.workspaces[ws_idx];
             ws.remove_pane(pane_id)
         };
+        self.mark_session_dirty();
 
         if should_close_workspace {
             self.workspaces.remove(ws_idx);

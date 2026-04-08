@@ -20,6 +20,7 @@ const ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 const SIDEBAR_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 
 use crossterm::terminal;
@@ -52,6 +53,7 @@ pub struct App {
     next_resize_poll: Instant,
     next_animation_tick: Option<Instant>,
     next_auto_update_check: Option<Instant>,
+    session_save_deadline: Option<Instant>,
     last_render_at: Option<Instant>,
     suppressed_repeat_keys: HashSet<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
     render_notify: Arc<Notify>,
@@ -300,6 +302,7 @@ impl App {
             },
             global_menu: state::MenuListState::new(0),
             host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
+            session_dirty: false,
         };
 
         for ws in &mut state.workspaces {
@@ -335,6 +338,7 @@ impl App {
             next_animation_tick: None,
             next_auto_update_check: (!no_session)
                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
+            session_save_deadline: None,
             last_render_at: None,
             suppressed_repeat_keys: HashSet::new(),
             api_rx,
@@ -346,6 +350,42 @@ impl App {
             render_notify,
             render_dirty,
         }
+    }
+
+    fn schedule_session_save(&mut self) {
+        if !self.no_session {
+            self.session_save_deadline = Some(Instant::now() + SESSION_SAVE_DEBOUNCE);
+        }
+    }
+
+    fn sync_session_save_schedule(&mut self) {
+        if self.state.session_dirty {
+            self.state.session_dirty = false;
+            self.schedule_session_save();
+        }
+    }
+
+    fn save_session_now(&mut self) {
+        if self.no_session {
+            self.session_save_deadline = None;
+            return;
+        }
+
+        if self.state.workspaces.is_empty() {
+            crate::persist::clear();
+        } else {
+            let snap = crate::persist::capture(
+                &self.state.workspaces,
+                self.state.active,
+                self.state.selected,
+                self.state.agent_panel_scope,
+                self.state.sidebar_width,
+                self.state.sidebar_section_split,
+            );
+            crate::persist::save(&snap);
+        }
+
+        self.session_save_deadline = None;
     }
 
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
@@ -370,6 +410,7 @@ impl App {
             }
 
             self.sync_focus_events();
+            self.sync_session_save_schedule();
 
             let now = Instant::now();
             if self.handle_scheduled_tasks(now) {
@@ -457,16 +498,8 @@ impl App {
         }
 
         // Save session on exit (skip in --no-session mode)
-        if !self.no_session && !self.state.workspaces.is_empty() {
-            let snap = crate::persist::capture(
-                &self.state.workspaces,
-                self.state.active,
-                self.state.selected,
-                self.state.agent_panel_scope,
-                self.state.sidebar_width,
-                self.state.sidebar_section_split,
-            );
-            crate::persist::save(&snap);
+        if !self.no_session {
+            self.save_session_now();
         }
 
         Ok(())
@@ -643,6 +676,13 @@ impl App {
             self.run_auto_update_check();
         }
 
+        if self
+            .session_save_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.save_session_now();
+        }
+
         self.sync_animation_timer(now);
         changed
     }
@@ -714,6 +754,7 @@ impl App {
             self.next_animation_tick,
             self.git_refresh_deadline(),
             self.next_auto_update_check,
+            self.session_save_deadline,
             render_deadline,
         ]
         .into_iter()
@@ -1108,6 +1149,7 @@ impl App {
                     .unwrap();
                 };
                 ws.set_custom_name(params.label.clone());
+                self.schedule_session_save();
                 self.emit_event(crate::api::schema::EventEnvelope {
                     event: crate::api::schema::EventKind::WorkspaceRenamed,
                     data: crate::api::schema::EventData::WorkspaceRenamed {
@@ -1279,11 +1321,10 @@ impl App {
                     Ok(tab_idx) => {
                         if params.focus {
                             self.state.switch_workspace(ws_idx);
-                            if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
-                                ws.switch_tab(tab_idx);
-                            }
+                            self.state.switch_tab(tab_idx);
                             self.state.mode = Mode::Terminal;
                         }
+                        self.schedule_session_save();
                         let tab = self.tab_info(ws_idx, tab_idx).unwrap();
                         if let Some(pane_id) = self.state.workspaces[ws_idx].tabs[tab_idx]
                             .layout
@@ -1333,9 +1374,7 @@ impl App {
                     .unwrap();
                 };
                 self.state.switch_workspace(ws_idx);
-                if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
-                    ws.switch_tab(tab_idx);
-                }
+                self.state.switch_tab(tab_idx);
                 let tab = self.tab_info(ws_idx, tab_idx).unwrap();
                 SuccessResponse {
                     id: request.id,
@@ -1369,6 +1408,7 @@ impl App {
                     .unwrap();
                 };
                 tab.set_custom_name(params.label.clone());
+                self.schedule_session_save();
                 self.emit_event(crate::api::schema::EventEnvelope {
                     event: crate::api::schema::EventKind::TabRenamed,
                     data: crate::api::schema::EventData::TabRenamed {
@@ -1424,6 +1464,7 @@ impl App {
                     })
                     .unwrap();
                 }
+                self.schedule_session_save();
                 self.emit_event(crate::api::schema::EventEnvelope {
                     event: crate::api::schema::EventKind::TabClosed,
                     data: crate::api::schema::EventData::TabClosed {
@@ -1491,6 +1532,7 @@ impl App {
                 if !params.focus {
                     ws.layout.focus_pane(target_pane_id);
                 }
+                self.schedule_session_save();
                 let pane = self.pane_info(ws_idx, new_pane_id).unwrap();
                 self.emit_event(crate::api::schema::EventEnvelope {
                     event: crate::api::schema::EventKind::PaneCreated,
@@ -1822,6 +1864,7 @@ impl App {
                     });
                 } else {
                     ws.close_pane(pane_id);
+                    self.schedule_session_save();
                     self.emit_event(crate::api::schema::EventEnvelope {
                         event: crate::api::schema::EventKind::PaneClosed,
                         data: crate::api::schema::EventData::PaneClosed {
@@ -2053,6 +2096,7 @@ impl App {
                         if let Some(tab) = ws.tabs.get_mut(tab_idx) {
                             tab.set_custom_name(name);
                         }
+                        self.schedule_session_save();
                     }
                 }
             }
@@ -2083,6 +2127,7 @@ impl App {
             ws.switch_tab(idx);
             self.state.mode = Mode::Terminal;
         }
+        self.schedule_session_save();
         Ok(idx)
     }
 
@@ -2109,6 +2154,7 @@ impl App {
             self.state.switch_workspace(idx);
             self.state.mode = Mode::Terminal;
         }
+        self.schedule_session_save();
         Ok(idx)
     }
 
@@ -2520,6 +2566,42 @@ mod tests {
 
         assert_eq!(ws_idx, 1);
         assert_eq!(seed_cwd, std::path::PathBuf::from("/tmp/pion"));
+    }
+
+    #[test]
+    fn session_dirty_flag_schedules_debounced_save() {
+        let mut app = test_app();
+        app.no_session = false;
+        app.state.session_dirty = true;
+
+        app.sync_session_save_schedule();
+
+        assert!(!app.state.session_dirty);
+        assert!(app.session_save_deadline.is_some());
+    }
+
+    #[test]
+    fn next_loop_deadline_includes_session_save_deadline() {
+        let mut app = test_app();
+        let now = Instant::now();
+        app.session_save_deadline = Some(now + Duration::from_secs(2));
+        app.next_resize_poll = now + Duration::from_secs(5);
+        app.next_auto_update_check = Some(now + Duration::from_secs(6));
+
+        assert_eq!(
+            app.next_loop_deadline(now, false),
+            app.session_save_deadline
+        );
+    }
+
+    #[test]
+    fn due_session_save_deadline_is_cleared() {
+        let mut app = test_app();
+        app.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
+
+        app.handle_scheduled_tasks(Instant::now());
+
+        assert!(app.session_save_deadline.is_none());
     }
 
     #[tokio::test]

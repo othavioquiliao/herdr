@@ -320,6 +320,7 @@ impl App {
             if is_double_click {
                 self.state.sidebar_width = self.state.default_sidebar_width;
                 self.state.sidebar_width_auto = false;
+                self.state.mark_session_dirty();
                 self.state.drag = None;
                 return;
             }
@@ -1034,6 +1035,7 @@ fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                 Mode::RenameWorkspace if !state.workspaces.is_empty() => {
                     if !new_name.is_empty() {
                         state.workspaces[state.selected].set_custom_name(new_name);
+                        state.mark_session_dirty();
                     }
                 }
                 Mode::RenameTab if state.creating_new_tab => {
@@ -1049,6 +1051,7 @@ fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                         if let Some(ws) = state.active.and_then(|i| state.workspaces.get_mut(i)) {
                             if let Some(tab) = ws.active_tab_mut() {
                                 tab.set_custom_name(new_name);
+                                state.mark_session_dirty();
                             }
                         }
                     }
@@ -2059,10 +2062,8 @@ impl AppState {
                             self.collapsed_agent_detail_target_at(mouse.row)
                         {
                             self.switch_workspace(ws_idx);
-                            if let Some(ws) = self.workspaces.get_mut(ws_idx) {
-                                ws.switch_tab(tab_idx);
-                                ws.layout.focus_pane(pane_id);
-                            }
+                            self.switch_tab(tab_idx);
+                            self.focus_pane(pane_id);
                             self.mode = Mode::Terminal;
                         }
                         return None;
@@ -2109,6 +2110,7 @@ impl AppState {
                             AgentPanelScope::AllWorkspaces => AgentPanelScope::CurrentWorkspace,
                         };
                         self.agent_panel_scroll = 0;
+                        self.mark_session_dirty();
                         return None;
                     }
 
@@ -2131,10 +2133,8 @@ impl AppState {
                     if let Some((ws_idx, tab_idx, pane_id)) = self.agent_detail_target_at(mouse.row)
                     {
                         self.switch_workspace(ws_idx);
-                        if let Some(ws) = self.workspaces.get_mut(ws_idx) {
-                            ws.switch_tab(tab_idx);
-                            ws.layout.focus_pane(pane_id);
-                        }
+                        self.switch_tab(tab_idx);
+                        self.focus_pane(pane_id);
                         self.mode = Mode::Terminal;
                         return None;
                     }
@@ -2150,11 +2150,7 @@ impl AppState {
                     );
                     self.selection = Some(Selection::anchor(info.id, row, col, info.inner_rect));
 
-                    if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
-                        if ws.layout.focused() != info.id {
-                            ws.layout.focus_pane(info.id);
-                        }
-                    }
+                    self.focus_pane(info.id);
                     if self.mode != Mode::Terminal {
                         self.mode = Mode::Terminal;
                     }
@@ -2165,11 +2161,7 @@ impl AppState {
                         && mouse.row < p.rect.y + p.rect.height
                 }) {
                     let id = info.id;
-                    if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
-                        if ws.layout.focused() != id {
-                            ws.layout.focus_pane(id);
-                        }
-                    }
+                    self.focus_pane(id);
                     if self.mode != Mode::Terminal {
                         self.mode = Mode::Terminal;
                     }
@@ -2241,6 +2233,7 @@ impl AppState {
                             let path = path.clone();
                             if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
                                 ws.layout.set_ratio_at(&path, ratio);
+                                self.mark_session_dirty();
                             }
                         }
                         DragTarget::PaneScrollbar {
@@ -2456,6 +2449,7 @@ impl AppState {
         let width = divider_col.saturating_sub(sidebar.x).saturating_add(1);
         self.sidebar_width =
             width.clamp(crate::ui::MIN_SIDEBAR_WIDTH, crate::ui::MAX_SIDEBAR_WIDTH);
+        self.mark_session_dirty();
     }
 
     fn on_sidebar_section_divider(&self, col: u16, row: u16) -> bool {
@@ -2482,6 +2476,7 @@ impl AppState {
         let relative_y = row.saturating_sub(sidebar.y);
         let ratio = (relative_y as f32) / (content_height as f32);
         self.sidebar_section_split = ratio.clamp(0.1, 0.9);
+        self.mark_session_dirty();
     }
 
     /// Find which workspace index a sidebar row belongs to (two-section layout).
@@ -2771,6 +2766,7 @@ impl AppState {
         if let Some(ws) = self.active.and_then(|i| self.workspaces.get_mut(i)) {
             if ws.layout.focused() != pane_id {
                 ws.layout.focus_pane(pane_id);
+                self.mark_session_dirty();
             }
         }
     }
@@ -2987,6 +2983,7 @@ impl AppState {
                 self.host_terminal_theme,
             ) {
                 ws.layout.focus_pane(new_id);
+                self.mark_session_dirty();
                 self.mode = Mode::Terminal;
             }
         }

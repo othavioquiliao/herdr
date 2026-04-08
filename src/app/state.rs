@@ -626,9 +626,15 @@ pub struct AppState {
     pub global_menu: MenuListState,
     /// Resolved host terminal default colors for theming embedded panes.
     pub host_terminal_theme: TerminalTheme,
+    /// Set when a persisted session snapshot would change.
+    pub session_dirty: bool,
 }
 
 impl AppState {
+    pub(crate) fn mark_session_dirty(&mut self) {
+        self.session_dirty = true;
+    }
+
     pub fn sound_enabled(&self) -> bool {
         self.sound.enabled
     }
@@ -780,6 +786,7 @@ impl AppState {
             },
             global_menu: MenuListState::new(0),
             host_terminal_theme: TerminalTheme::default(),
+            session_dirty: false,
         }
     }
 }
