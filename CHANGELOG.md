@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.4.5] - 2026-04-09
+
 ### Added
 - `herdr workspace create` and `herdr tab create` now support `--label`, so scripts and agents can name new workspaces and tabs immediately instead of creating them first and renaming them afterward.
 - The global menu now includes a manual **reload keybinds** action, so you can apply `config.toml` keybinding changes without restarting herdr.
