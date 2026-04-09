@@ -130,18 +130,7 @@ fn detect_claude(content: &str) -> AgentState {
 
     // --- Blocked detection (full content including prompt box) ---
 
-    // "Do you want" or "Would you like" followed by yes/❯
-    if has_confirmation_prompt(&lower) {
-        return AgentState::Blocked;
-    }
-
-    // Selection prompt: ❯ followed by numbered option
-    if has_selection_prompt(content) {
-        return AgentState::Blocked;
-    }
-
-    // "esc to cancel" indicates permission/confirmation dialog
-    if lower.contains("esc to cancel") {
+    if has_claude_blocked_prompt(content, &lower) {
         return AgentState::Blocked;
     }
 
@@ -409,6 +398,35 @@ fn has_confirmation_prompt(lower_content: &str) -> bool {
     false
 }
 
+/// Claude uses the same generic Select and Dialog widgets for both
+/// permission flows and ordinary slash/settings menus. Match only the
+/// permission and interview prompts that actually need user input.
+fn has_claude_blocked_prompt(content: &str, lower_content: &str) -> bool {
+    has_confirmation_prompt(lower_content)
+        || lower_content.contains("do you want to proceed?")
+        || lower_content.contains("would you like to proceed?")
+        || lower_content.contains("waiting for permission")
+        || lower_content.contains("do you want to allow this connection?")
+        || lower_content.contains("tab to amend")
+        || lower_content.contains("ctrl+e to explain")
+        || lower_content.contains("chat about this")
+        || lower_content.contains("review your answers")
+        || lower_content.contains("skip interview and plan immediately")
+        || (has_selection_prompt(content) && has_claude_yes_no_choice(content))
+}
+
+fn has_claude_yes_no_choice(content: &str) -> bool {
+    content.lines().any(|line| {
+        let trimmed = line.trim().trim_start_matches('❯').trim_start().to_lowercase();
+        trimmed == "yes"
+            || trimmed == "no"
+            || trimmed.starts_with("1. yes")
+            || trimmed.starts_with("2. no")
+            || trimmed.starts_with("yes, and ")
+            || trimmed.starts_with("no, and tell claude")
+    })
+}
+
 /// Check for "❯" followed by numbered options like "1."
 fn has_selection_prompt(content: &str) -> bool {
     for line in content.lines() {
@@ -433,8 +451,9 @@ fn has_interrupt_pattern(lower_content: &str) -> bool {
 /// Claude Code spinner characters + activity label.
 /// The verb changes frequently ("Processing…", "Pouncing…", etc.), so rely
 /// on the spinner glyph + trailing ellipsis rather than specific wording.
+/// Include Claude's narrow-pane middle-dot frame too.
 fn has_spinner_activity(content: &str) -> bool {
-    const SPINNER_CHARS: &str = "✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❇❈❉❊❋✢✣✤✥✦✧✨⊛⊕⊙◉◎◍⁂⁕※⍟☼★☆";
+    const SPINNER_CHARS: &str = "·✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❇❈❉❊❋✢✣✤✥✦✧✨⊛⊕⊙◉◎◍⁂⁕※⍟☼★☆";
     for line in content.lines() {
         let trimmed = line.trim();
         let mut chars = trimmed.chars();
@@ -656,6 +675,12 @@ mod tests {
     }
 
     #[test]
+    fn claude_working_middle_dot_spinner() {
+        let screen = "· Thinking…\n─────────\n❯ \n─────────";
+        assert_eq!(detect_claude(screen), AgentState::Working);
+    }
+
+    #[test]
     fn claude_working_spinner_with_detail() {
         let screen = "✳ Simplifying recompute_tangents…\n─────────\n❯ \n─────────";
         assert_eq!(detect_claude(screen), AgentState::Working);
@@ -675,14 +700,34 @@ mod tests {
 
     #[test]
     fn claude_waiting_selection_prompt() {
-        let screen = "Choose an option:\n❯ 1. Apply\n  2. Skip\n  3. Cancel";
+        let screen =
+            "Do you want to proceed?\n❯ 1. Yes\n  2. No\n\nEsc to cancel · Tab to amend";
         assert_eq!(detect_claude(screen), AgentState::Blocked);
     }
 
     #[test]
     fn claude_waiting_esc_to_cancel() {
-        let screen = "Allow bash: rm -rf /tmp/test?\n\nesc to cancel";
+        let screen = "Allow bash: rm -rf /tmp/test?\n\nDo you want to proceed?\n\nesc to cancel";
         assert_eq!(detect_claude(screen), AgentState::Blocked);
+    }
+
+    #[test]
+    fn claude_waiting_ask_user_question_menu() {
+        let screen =
+            "Which approach should I take?\n❯ 1. Minimal change\n  2. Bigger refactor\n3. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel";
+        assert_eq!(detect_claude(screen), AgentState::Blocked);
+    }
+
+    #[test]
+    fn claude_idle_hooks_menu() {
+        let screen = "Hooks\n0 hooks configured\nℹ This menu is read-only. To add or modify hooks, edit settings.json directly or ask Claude. Learn more\n\n❯ 1. PreToolUse\n  2. PostToolUse\n  3. PostToolUseFailure\n\nEnter to confirm · Esc to cancel";
+        assert_eq!(detect_claude(screen), AgentState::Idle);
+    }
+
+    #[test]
+    fn claude_idle_theme_menu() {
+        let screen = "Theme\nChoose the text style that looks best with your terminal\n\n❯ 1. Dark mode ✔\n  2. Light mode\n  3. Dark mode (colorblind-friendly)\n\nSyntax theme: Monokai Extended (ctrl+t to disable)\n\nEnter to select · Esc to cancel";
+        assert_eq!(detect_claude(screen), AgentState::Idle);
     }
 
     #[test]
@@ -1053,6 +1098,7 @@ mod tests {
 
     #[test]
     fn spinner_activity_detected() {
+        assert!(has_spinner_activity("· Thinking…"));
         assert!(has_spinner_activity("✽ Tempering…"));
         assert!(has_spinner_activity("✳ Simplifying recompute_tangents…"));
         assert!(has_spinner_activity("  ✶ Reading…")); // with leading whitespace
