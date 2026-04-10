@@ -10,6 +10,11 @@ use crate::pane::EffectiveStateChange;
 
 use super::state::{AppState, Mode, ToastKind, ToastNotification};
 
+fn is_background_completion_transition(prev_state: AgentState, new_state: AgentState) -> bool {
+    matches!(new_state, AgentState::Idle)
+        && matches!(prev_state, AgentState::Working | AgentState::Blocked)
+}
+
 fn notification_sound_for_state_change(
     is_active_tab: bool,
     prev_state: AgentState,
@@ -21,7 +26,9 @@ fn notification_sound_for_state_change(
 
     match new_state {
         AgentState::Blocked => Some(crate::sound::Sound::Request),
-        AgentState::Idle if prev_state != AgentState::Idle && !is_active_tab => {
+        AgentState::Idle
+            if is_background_completion_transition(prev_state, new_state) && !is_active_tab =>
+        {
             Some(crate::sound::Sound::Done)
         }
         _ => None,
@@ -39,7 +46,9 @@ fn notification_toast_for_state_change(
 
     match new_state {
         AgentState::Blocked => Some(ToastKind::NeedsAttention),
-        AgentState::Idle if prev_state != AgentState::Idle => Some(ToastKind::Finished),
+        AgentState::Idle if is_background_completion_transition(prev_state, new_state) => {
+            Some(ToastKind::Finished)
+        }
         _ => None,
     }
 }
@@ -500,8 +509,7 @@ impl AppState {
             return;
         };
 
-        if change.state == AgentState::Idle
-            && change.previous_state != AgentState::Idle
+        if is_background_completion_transition(change.previous_state, change.state)
             && !is_active_tab
         {
             pane.seen = false;
@@ -804,6 +812,22 @@ mod tests {
     }
 
     #[test]
+    fn initial_idle_in_background_stays_seen() {
+        let mut state = app_with_workspaces(&["active", "background"]);
+        state.active = Some(0);
+        let bg_pane_id = *state.workspaces[1].panes.keys().next().unwrap();
+
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id: bg_pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Idle,
+        });
+
+        let pane = state.workspaces[1].panes.get(&bg_pane_id).unwrap();
+        assert!(pane.seen);
+    }
+
+    #[test]
     fn waiting_sound_plays_even_in_active_workspace() {
         assert_eq!(
             notification_sound_for_state_change(true, AgentState::Working, AgentState::Blocked),
@@ -819,6 +843,10 @@ mod tests {
         );
         assert_eq!(
             notification_sound_for_state_change(true, AgentState::Working, AgentState::Idle),
+            None
+        );
+        assert_eq!(
+            notification_sound_for_state_change(false, AgentState::Unknown, AgentState::Idle),
             None
         );
     }
