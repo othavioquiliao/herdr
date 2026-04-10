@@ -349,17 +349,36 @@ fn detect_droid(content: &str) -> AgentState {
 
 /// Amp (Sourcegraph) detection.
 ///
-/// Screen layout when working:
+/// Blocked approval prompts use a shared footer with options like
+/// "Approve", "Allow All for This Session", "Allow All for Every Session",
+/// "Allow File for Every Session", and "Deny with feedback". The header varies
+/// by approval type, for example "Invoke tool ...?", "Run this command?",
+/// "Allow editing file:", or "Allow creating file:".
+///
+/// Working layout:
 /// ```text
 ///   ✓ Search Map the core runtime architecture...
 ///   ⋯ Oracle ▼
 ///   ≈ Running tools...         Esc to cancel
 /// ```
-///
-/// "Esc to cancel" is the reliable working indicator — it only appears
-/// while amp is actively running tools or thinking.
 fn detect_amp(content: &str) -> AgentState {
     let lower = content.to_lowercase();
+
+    let has_waiting_for_approval = lower.contains("waiting for approval");
+    let has_approval_header = lower.contains("invoke tool")
+        || lower.contains("run this command?")
+        || lower.contains("allow editing file:")
+        || lower.contains("allow creating file:")
+        || lower.contains("confirm tool call");
+    let has_approval_actions = lower.contains("approve")
+        && (lower.contains("allow all for this session")
+            || lower.contains("allow all for every session")
+            || lower.contains("allow file for every session")
+            || lower.contains("deny with feedback"));
+
+    if has_approval_actions && (has_waiting_for_approval || has_approval_header) {
+        return AgentState::Blocked;
+    }
 
     if lower.contains("esc to cancel") {
         return AgentState::Working;
@@ -1062,6 +1081,30 @@ mod tests {
     }
 
     // ---- Amp ----
+
+    #[test]
+    fn amp_blocked_waiting_for_approval() {
+        let screen = "Invoke tool shell_command?\n▸● Approve [Alt+1]\n ○ Allow All for This Session [Alt+2]\n ○ Allow All for Every Session [Alt+3]\n ○ Deny with feedback [Alt+4]\nWaiting for approval...";
+        assert_eq!(detect_state(Some(Agent::Amp), screen), AgentState::Blocked);
+    }
+
+    #[test]
+    fn amp_blocked_run_this_command() {
+        let screen = "Run this command?\nrg --files\n▸● Approve [Alt+1]\n ○ Allow All for This Session [Alt+2]\n ○ Allow All for Every Session [Alt+3]\n ○ Deny with feedback [Alt+4]";
+        assert_eq!(detect_state(Some(Agent::Amp), screen), AgentState::Blocked);
+    }
+
+    #[test]
+    fn amp_blocked_allow_editing_file() {
+        let screen = "Allow editing file:\nsrc/detect.rs\n▸● Approve [Alt+1]\n ○ Allow File for Every Session [Alt+2]\n ○ Allow All for This Session [Alt+3]\n ○ Deny with feedback [Alt+4]";
+        assert_eq!(detect_state(Some(Agent::Amp), screen), AgentState::Blocked);
+    }
+
+    #[test]
+    fn amp_blocked_allow_creating_file() {
+        let screen = "Allow creating file:\nsrc/new_file.rs\n▸● Approve [Alt+1]\n ○ Allow File for Every Session [Alt+2]\n ○ Allow All for This Session [Alt+3]\n ○ Deny with feedback [Alt+4]";
+        assert_eq!(detect_state(Some(Agent::Amp), screen), AgentState::Blocked);
+    }
 
     #[test]
     fn amp_working_running_tools() {

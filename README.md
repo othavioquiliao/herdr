@@ -141,7 +141,7 @@ the following agents have been tested:
 | [claude code](https://docs.anthropic.com/en/docs/claude-code) | ✓ | ✓ | ✓ |
 | [codex](https://github.com/openai/codex) | ✓ | ✓ | ✓ |
 | [droid](https://factory.ai) | ✓ | ✓ | ✓ |
-| [amp](https://ampcode.com) | ✓ | ✓ | partial |
+| [amp](https://ampcode.com) | ✓ | ✓ | ✓ |
 | [opencode](https://github.com/anomalyco/opencode) | ✓ | ✓ | ✓ |
 
 heuristics also exist for these agents but have not been fully tested yet:
