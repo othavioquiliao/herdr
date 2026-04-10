@@ -37,6 +37,7 @@ mod selection;
 mod sound;
 mod terminal_theme;
 mod ui;
+mod uninstall;
 mod update;
 mod workspace;
 
@@ -193,11 +194,16 @@ fn main() -> io::Result<()> {
         }
     }
 
+    if args.get(1).map(|s| s.as_str()) == Some("uninstall") {
+        return uninstall::run(&args[2..]);
+    }
+
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("herdr — terminal workspace manager for AI coding agents");
         println!();
         println!("Usage: herdr [options]");
         println!("       herdr update");
+        println!("       herdr uninstall");
         println!("       herdr workspace <subcommand> ...");
         println!("       herdr tab <subcommand> ...");
         println!("       herdr pane <subcommand> ...");
@@ -206,6 +212,7 @@ fn main() -> io::Result<()> {
         println!();
         println!("Commands:");
         println!("  update              Download and install the latest version");
+        println!("  uninstall           Remove herdr (binary, config, integrations) from this machine");
         println!("  workspace           workspace helpers over the socket api");
         println!("  tab                 tab helpers over the socket api");
         println!("  pane                pane control helpers over the socket api");
@@ -256,7 +263,8 @@ fn main() -> io::Result<()> {
             std::process::exit(1);
         }
         if !arg.starts_with('-')
-            && !["update", "workspace", "pane", "wait", "integration"].contains(&arg.as_str())
+            && !["update", "uninstall", "workspace", "pane", "wait", "integration"]
+                .contains(&arg.as_str())
         {
             eprintln!("unknown command: {arg}");
             eprintln!("run 'herdr --help' for usage");

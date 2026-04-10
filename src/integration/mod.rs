@@ -536,7 +536,7 @@ fn is_matching_command_hook(hook: &Value, command: &str) -> bool {
         && hook.get("command").and_then(Value::as_str) == Some(command)
 }
 
-fn remove_file_if_exists(path: &Path) -> io::Result<bool> {
+pub(crate) fn remove_file_if_exists(path: &Path) -> io::Result<bool> {
     match fs::remove_file(path) {
         Ok(()) => Ok(true),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
