@@ -136,7 +136,6 @@ impl App {
                 KeyCode::Right | KeyCode::Char('l') => {
                     self.state.onboarding_step = 1;
                 }
-                KeyCode::Char('q') => self.state.should_quit = true,
                 _ => match modal_action_from_key(&key, ONBOARDING_WELCOME_ACTIONS) {
                     Some(ModalAction::Continue) => self.state.onboarding_step = 1,
                     _ => {}
@@ -153,7 +152,6 @@ impl App {
                         .onboarding_list
                         .select((c as usize) - ('1' as usize));
                 }
-                KeyCode::Char('q') => self.state.should_quit = true,
                 _ => match modal_action_from_key(&key, ONBOARDING_NOTIFICATION_ACTIONS) {
                     Some(ModalAction::Back) => self.state.onboarding_step = 0,
                     Some(ModalAction::Save) => self.complete_onboarding(),
@@ -436,7 +434,6 @@ enum ModalAction {
 enum ModalKeyBinding {
     Enter,
     Esc,
-    EscOrQ,
     CtrlC,
 }
 
@@ -445,7 +442,6 @@ impl ModalKeyBinding {
         match self {
             Self::Enter => key.code == KeyCode::Enter,
             Self::Esc => key.code == KeyCode::Esc,
-            Self::EscOrQ => key.code == KeyCode::Esc || key.code == KeyCode::Char('q'),
             Self::CtrlC => {
                 key.code == KeyCode::Char('c')
                     && key.modifiers == crossterm::event::KeyModifiers::CONTROL
@@ -476,7 +472,7 @@ fn modal_action_from_buttons<A: Copy>(col: u16, row: u16, buttons: &[(Rect, A)])
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GlobalMenuAction {
-    ApplyUpdate,
+    Quit,
     WhatsNew,
     Keybinds,
     ReloadKeybinds,
@@ -492,9 +488,7 @@ fn global_menu_actions(state: &AppState) -> Vec<GlobalMenuAction> {
     if state.latest_release_notes_available || state.update_available.is_some() {
         actions.push(GlobalMenuAction::WhatsNew);
     }
-    if state.update_available.is_some() {
-        actions.push(GlobalMenuAction::ApplyUpdate);
-    }
+    actions.push(GlobalMenuAction::Quit);
     actions
 }
 
@@ -655,7 +649,7 @@ fn open_update_release_notes(state: &mut AppState) {
 
 fn apply_global_menu_action(state: &mut AppState, action: GlobalMenuAction) {
     match action {
-        GlobalMenuAction::ApplyUpdate => state.should_quit = true,
+        GlobalMenuAction::Quit => state.should_quit = true,
         GlobalMenuAction::WhatsNew => open_update_release_notes(state),
         GlobalMenuAction::Keybinds => open_keybind_help(state),
         GlobalMenuAction::ReloadKeybinds => {
@@ -669,7 +663,7 @@ fn apply_global_menu_action(state: &mut AppState, action: GlobalMenuAction) {
 fn handle_global_menu_key(state: &mut AppState, key: KeyEvent) {
     let actions = global_menu_actions(state);
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => leave_modal(state),
+        KeyCode::Esc => leave_modal(state),
         KeyCode::Up | KeyCode::Char('k') => state.global_menu.move_prev(),
         KeyCode::Down | KeyCode::Char('j') => state.global_menu.move_next(actions.len()),
         KeyCode::Enter => {
@@ -689,9 +683,7 @@ fn handle_keybind_help_key(state: &mut AppState, key: KeyEvent) {
         KeyCode::PageDown => state.scroll_keybind_help(8),
         KeyCode::Home => state.keybind_help.scroll = 0,
         KeyCode::End => state.keybind_help.scroll = state.keybind_help_max_scroll(),
-        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
-            leave_modal(state)
-        }
+        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') => leave_modal(state),
         _ => {}
     }
 }
@@ -985,7 +977,7 @@ const ONBOARDING_NOTIFICATION_ACTIONS: &[ModalActionSpec<ModalAction>] = &[
 
 const RELEASE_NOTES_ACTIONS: &[ModalActionSpec<ModalAction>] = &[ModalActionSpec {
     action: ModalAction::Close,
-    bindings: &[ModalKeyBinding::Enter, ModalKeyBinding::EscOrQ],
+    bindings: &[ModalKeyBinding::Enter, ModalKeyBinding::Esc],
 }];
 
 const RENAME_ACTIONS: &[ModalActionSpec<ModalAction>] = &[
@@ -999,7 +991,7 @@ const RENAME_ACTIONS: &[ModalActionSpec<ModalAction>] = &[
     },
     ModalActionSpec {
         action: ModalAction::Cancel,
-        bindings: &[ModalKeyBinding::EscOrQ],
+        bindings: &[ModalKeyBinding::Esc],
     },
 ];
 
@@ -1010,7 +1002,7 @@ const CONFIRM_CLOSE_ACTIONS: &[ModalActionSpec<ModalAction>] = &[
     },
     ModalActionSpec {
         action: ModalAction::Cancel,
-        bindings: &[ModalKeyBinding::EscOrQ],
+        bindings: &[ModalKeyBinding::Esc],
     },
 ];
 
@@ -1021,7 +1013,7 @@ const SETTINGS_ACTIONS: &[ModalActionSpec<ModalAction>] = &[
     },
     ModalActionSpec {
         action: ModalAction::Close,
-        bindings: &[ModalKeyBinding::EscOrQ],
+        bindings: &[ModalKeyBinding::Esc],
     },
 ];
 
@@ -1615,9 +1607,11 @@ impl AppState {
         if self.latest_release_notes_available || self.update_available.is_some() {
             labels.push("what's new");
         }
-        if self.update_available.is_some() {
-            labels.push("quit to apply update");
-        }
+        labels.push(if self.update_available.is_some() {
+            "quit to apply update"
+        } else {
+            "quit"
+        });
         labels
     }
 
@@ -3858,7 +3852,7 @@ mod tests {
     }
 
     #[test]
-    fn update_pending_menu_surfaces_apply_update_action() {
+    fn update_pending_menu_surfaces_quit_to_apply_update_action() {
         let mut app = app_for_mouse_test();
         app.state.update_available = Some("0.3.2".into());
         app.state.latest_release_notes_available = true;
@@ -3898,7 +3892,13 @@ mod tests {
 
         assert_eq!(
             app.state.global_menu_labels(),
-            vec!["settings", "keybinds", "reload keybinds", "what's new"]
+            vec![
+                "settings",
+                "keybinds",
+                "reload keybinds",
+                "what's new",
+                "quit"
+            ]
         );
     }
 

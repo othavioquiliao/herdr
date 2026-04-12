@@ -1982,7 +1982,7 @@ fn render_release_notes_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
             Span::styled("wheel ↑↓", Style::default().fg(app.palette.text)),
             Span::styled("  ·  ", Style::default().fg(app.palette.overlay0)),
             Span::styled("close", Style::default().fg(app.palette.overlay0)),
-            Span::styled(" q / esc / enter ", Style::default().fg(app.palette.text)),
+            Span::styled(" esc / enter ", Style::default().fg(app.palette.text)),
         ])),
         stack.footer.unwrap_or_default(),
     );
@@ -2358,7 +2358,9 @@ fn render_navigate_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
         Span::styled("?", key),
         Span::styled(" keybinds  ", dim),
         Span::styled("s", key),
-        Span::styled(" settings", dim),
+        Span::styled(" settings  ", dim),
+        Span::styled("q", key),
+        Span::styled(" quit", dim),
     ]);
 
     let overlay_y = area.y + area.height.saturating_sub(1);
@@ -2629,7 +2631,7 @@ fn render_keybind_help_overlay(app: &AppState, frame: &mut Frame) {
             Span::styled(" pgup / pgdn ", Style::default().fg(app.palette.text)),
             Span::styled("  ·  ", Style::default().fg(app.palette.overlay0)),
             Span::styled("close", Style::default().fg(app.palette.overlay0)),
-            Span::styled(" q / esc / enter ", Style::default().fg(app.palette.text)),
+            Span::styled(" esc / enter ", Style::default().fg(app.palette.text)),
         ])),
         stack.footer.unwrap_or_default(),
     );
