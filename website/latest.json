@@ -1,10 +1,10 @@
 {
-  "version": "0.4.8",
-  "notes": "### Added\n- Themes can now set `panel_bg = \"reset\"` to let herdr\u2019s panel chrome inherit the host terminal background instead of painting an opaque panel fill. This also accepts the aliases `default`, `none`, and `transparent`.\n- Ghostty-backed panes now preserve the host terminal\u2019s default background when it matches the outer terminal theme, so terminal window transparency can show through pane content instead of being repainted as an opaque color.\n\n### Fixed\n- Clipboard writes now prefer native platform clipboard tools (`pbcopy`, `wl-copy`, `xclip`, or `xsel`) before falling back to OSC 52, which makes copy operations from panes more reliable across terminal setups.",
+  "version": "0.4.9",
+  "notes": "### Fixed\n- Droid's primary-screen redraws no longer erase pane scrollback inside herdr, while normal scrollback-clear behavior is preserved elsewhere.\n- `q` is now dedicated to quitting in navigate mode instead of also acting as a generic cancel key in modals and overlays, reducing accidental quits.\n- Tab bar scrolling is tighter: the scroll-right button and new-tab button now sit directly adjacent to the last visible tab without a gap, and manual scroll no longer overscrolls past the last tab.",
   "assets": {
-    "linux-x86_64": "https://github.com/ogulcancelik/herdr/releases/download/v0.4.8/herdr-linux-x86_64",
-    "linux-aarch64": "https://github.com/ogulcancelik/herdr/releases/download/v0.4.8/herdr-linux-aarch64",
-    "macos-x86_64": "https://github.com/ogulcancelik/herdr/releases/download/v0.4.8/herdr-macos-x86_64",
-    "macos-aarch64": "https://github.com/ogulcancelik/herdr/releases/download/v0.4.8/herdr-macos-aarch64"
+    "linux-x86_64": "https://github.com/ogulcancelik/herdr/releases/download/v0.4.9/herdr-linux-x86_64",
+    "linux-aarch64": "https://github.com/ogulcancelik/herdr/releases/download/v0.4.9/herdr-linux-aarch64",
+    "macos-x86_64": "https://github.com/ogulcancelik/herdr/releases/download/v0.4.9/herdr-macos-x86_64",
+    "macos-aarch64": "https://github.com/ogulcancelik/herdr/releases/download/v0.4.9/herdr-macos-aarch64"
   }
 }
