@@ -28,8 +28,8 @@ const WORKSPACE_DRAG_THRESHOLD: u16 = 1;
 const TAB_DRAG_THRESHOLD: u16 = 1;
 
 use super::state::{
-    key_matches, AgentPanelScope, AppState, ContextMenuKind, ContextMenuState, DragState,
-    DragTarget, MenuListState, Mode, TabPressState, WorkspacePressState,
+    AgentPanelScope, AppState, ContextMenuKind, ContextMenuState, DragState, DragTarget,
+    MenuListState, Mode, TabPressState, WorkspacePressState,
 };
 use super::App;
 
@@ -37,57 +37,123 @@ use super::App;
 // Key handling
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AppKey {
+    raw: KeyEvent,
+    code: KeyCode,
+    modifiers: crossterm::event::KeyModifiers,
+}
+
+impl AppKey {
+    fn code(self) -> KeyCode {
+        self.code
+    }
+
+    fn modifiers(self) -> crossterm::event::KeyModifiers {
+        self.modifiers
+    }
+
+    fn raw_event(self) -> KeyEvent {
+        self.raw
+    }
+
+    fn matches_binding(
+        self,
+        expected_code: KeyCode,
+        expected_modifiers: crossterm::event::KeyModifiers,
+    ) -> bool {
+        let (expected_code, expected_modifiers) =
+            crate::input::normalize_app_key_binding(expected_code, expected_modifiers, None);
+        self.code == expected_code && self.modifiers == expected_modifiers
+    }
+
+    fn text_char(self) -> Option<char> {
+        match self.code {
+            KeyCode::Char(ch) if self.modifiers.is_empty() => Some(ch),
+            _ => None,
+        }
+    }
+}
+
+impl From<TerminalKey> for AppKey {
+    fn from(value: TerminalKey) -> Self {
+        let raw = value.as_key_event();
+        let (code, modifiers) = crate::input::normalize_app_key_binding(
+            value.code,
+            value.modifiers,
+            value.shifted_codepoint,
+        );
+        Self {
+            raw,
+            code,
+            modifiers,
+        }
+    }
+}
+
+impl From<KeyEvent> for AppKey {
+    fn from(value: KeyEvent) -> Self {
+        let (code, modifiers) =
+            crate::input::normalize_app_key_binding(value.code, value.modifiers, None);
+        Self {
+            raw: value,
+            code,
+            modifiers,
+        }
+    }
+}
+
 fn is_modifier_only_key(code: &KeyCode) -> bool {
     matches!(code, KeyCode::Modifier(_))
 }
 
-fn terminal_direct_navigation_action(state: &AppState, key: &KeyEvent) -> Option<NavigateAction> {
+fn terminal_direct_navigation_action(state: &AppState, key: &AppKey) -> Option<NavigateAction> {
     let kb = &state.keybinds;
     if kb
         .previous_workspace
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::PreviousWorkspace);
     }
     if kb
         .next_workspace
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::NextWorkspace);
     }
     if kb
         .previous_tab
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::PreviousTab);
     }
     if kb
         .next_tab
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::NextTab);
     }
     if kb
         .focus_pane_left
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::FocusPaneLeft);
     }
     if kb
         .focus_pane_down
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::FocusPaneDown);
     }
     if kb
         .focus_pane_up
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::FocusPaneUp);
     }
     if kb
         .focus_pane_right
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::FocusPaneRight);
     }
@@ -99,7 +165,7 @@ impl App {
         match self.state.mode {
             Mode::Terminal => self.handle_terminal_key(key).await,
             _ => {
-                let key = key.as_key_event();
+                let key = AppKey::from(key);
                 match self.state.mode {
                     Mode::Onboarding => self.handle_onboarding_key(key),
                     Mode::ReleaseNotes => self.handle_release_notes_key(key),
@@ -130,9 +196,9 @@ impl App {
         }
     }
 
-    fn handle_onboarding_key(&mut self, key: KeyEvent) {
+    fn handle_onboarding_key(&mut self, key: AppKey) {
         match self.state.onboarding_step {
-            0 => match key.code {
+            0 => match key.code() {
                 KeyCode::Right | KeyCode::Char('l') => {
                     self.state.onboarding_step = 1;
                 }
@@ -141,7 +207,7 @@ impl App {
                     _ => {}
                 },
             },
-            _ => match key.code {
+            _ => match key.code() {
                 KeyCode::Up | KeyCode::Char('k') => self.state.onboarding_list.move_prev(),
                 KeyCode::Down | KeyCode::Char('j') => self.state.onboarding_list.move_next(4),
                 KeyCode::Left | KeyCode::Char('h') => {
@@ -161,8 +227,8 @@ impl App {
         }
     }
 
-    fn handle_release_notes_key(&mut self, key: KeyEvent) {
-        match key.code {
+    fn handle_release_notes_key(&mut self, key: AppKey) {
+        match key.code() {
             KeyCode::Up | KeyCode::Char('k') => self.scroll_release_notes(-1),
             KeyCode::Down | KeyCode::Char('j') => self.scroll_release_notes(1),
             KeyCode::PageUp => self.scroll_release_notes(-8),
@@ -185,7 +251,7 @@ impl App {
         }
     }
 
-    fn handle_settings_key(&mut self, key: KeyEvent) {
+    fn handle_settings_key(&mut self, key: AppKey) {
         if let Some(action) = update_settings_state(&mut self.state, key) {
             match action {
                 SettingsAction::SaveTheme(name) => self.save_theme(&name),
@@ -195,10 +261,12 @@ impl App {
         }
     }
 
-    fn handle_navigate_key(&mut self, key: KeyEvent) {
+    fn handle_navigate_key(&mut self, key: AppKey) {
         self.state.update_dismissed = true;
 
-        if self.state.is_prefix(&key) || key.code == KeyCode::Esc {
+        if key.matches_binding(self.state.prefix_code, self.state.prefix_mods)
+            || key.code() == KeyCode::Esc
+        {
             leave_navigate_mode(&mut self.state);
             return;
         }
@@ -360,9 +428,10 @@ impl App {
         self.state.clear_selection();
         self.state.update_dismissed = true;
 
-        let key_event = key.as_key_event();
+        let app_key = AppKey::from(key);
+        let key_event = app_key.raw_event();
 
-        if let Some(action) = terminal_direct_navigation_action(&self.state, &key_event) {
+        if let Some(action) = terminal_direct_navigation_action(&self.state, &app_key) {
             debug!(
                 code = ?key_event.code,
                 modifiers = ?key_event.modifiers,
@@ -374,7 +443,7 @@ impl App {
             return;
         }
 
-        if self.state.is_prefix(&key_event) {
+        if app_key.matches_binding(self.state.prefix_code, self.state.prefix_mods) {
             self.state.mode = Mode::Navigate;
             return;
         }
@@ -460,13 +529,13 @@ enum ModalKeyBinding {
 }
 
 impl ModalKeyBinding {
-    fn matches(self, key: &KeyEvent) -> bool {
+    fn matches(self, key: &AppKey) -> bool {
         match self {
-            Self::Enter => key.code == KeyCode::Enter,
-            Self::Esc => key.code == KeyCode::Esc,
+            Self::Enter => key.code() == KeyCode::Enter,
+            Self::Esc => key.code() == KeyCode::Esc,
             Self::CtrlC => {
-                key.code == KeyCode::Char('c')
-                    && key.modifiers == crossterm::event::KeyModifiers::CONTROL
+                key.code() == KeyCode::Char('c')
+                    && key.modifiers() == crossterm::event::KeyModifiers::CONTROL
             }
         }
     }
@@ -478,7 +547,7 @@ struct ModalActionSpec<A> {
     bindings: &'static [ModalKeyBinding],
 }
 
-fn modal_action_from_key<A: Copy>(key: &KeyEvent, specs: &[ModalActionSpec<A>]) -> Option<A> {
+fn modal_action_from_key<A: Copy>(key: &AppKey, specs: &[ModalActionSpec<A>]) -> Option<A> {
     specs
         .iter()
         .find(|spec| spec.bindings.iter().any(|binding| binding.matches(key)))
@@ -564,11 +633,13 @@ fn apply_settings(state: &mut AppState) -> Option<SettingsAction> {
     }
 }
 
-fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Option<SettingsAction> {
+fn update_settings_state(state: &mut AppState, key: impl Into<AppKey>) -> Option<SettingsAction> {
     use crate::app::state::SettingsSection;
 
+    let key = key.into();
+
     match state.settings.section {
-        SettingsSection::Theme => match key.code {
+        SettingsSection::Theme => match key.code() {
             KeyCode::Up | KeyCode::Char('k') => {
                 let previous = state.settings.list.selected;
                 state.settings.list.move_prev();
@@ -596,7 +667,7 @@ fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Option<Settings
                 _ => {}
             },
         },
-        SettingsSection::Sound => match key.code {
+        SettingsSection::Sound => match key.code() {
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
                 state.settings.list.selected = 1 - state.settings.list.selected.min(1);
             }
@@ -618,7 +689,7 @@ fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Option<Settings
                 _ => {}
             },
         },
-        SettingsSection::Toast => match key.code {
+        SettingsSection::Toast => match key.code() {
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
                 state.settings.list.selected = 1 - state.settings.list.selected.min(1);
             }
@@ -682,9 +753,10 @@ fn apply_global_menu_action(state: &mut AppState, action: GlobalMenuAction) {
     }
 }
 
-fn handle_global_menu_key(state: &mut AppState, key: KeyEvent) {
+fn handle_global_menu_key(state: &mut AppState, key: impl Into<AppKey>) {
+    let key = key.into();
     let actions = global_menu_actions(state);
-    match key.code {
+    match key.code() {
         KeyCode::Esc => leave_modal(state),
         KeyCode::Up | KeyCode::Char('k') => state.global_menu.move_prev(),
         KeyCode::Down | KeyCode::Char('j') => state.global_menu.move_next(actions.len()),
@@ -697,8 +769,9 @@ fn handle_global_menu_key(state: &mut AppState, key: KeyEvent) {
     }
 }
 
-fn handle_keybind_help_key(state: &mut AppState, key: KeyEvent) {
-    match key.code {
+fn handle_keybind_help_key(state: &mut AppState, key: impl Into<AppKey>) {
+    let key = key.into();
+    match key.code() {
         KeyCode::Up | KeyCode::Char('k') => state.scroll_keybind_help(-1),
         KeyCode::Down | KeyCode::Char('j') => state.scroll_keybind_help(1),
         KeyCode::PageUp => state.scroll_keybind_help(-8),
@@ -712,18 +785,19 @@ fn handle_keybind_help_key(state: &mut AppState, key: KeyEvent) {
 
 fn navigate_custom_command_for_key(
     state: &AppState,
-    key: &KeyEvent,
+    key: &AppKey,
 ) -> Option<crate::config::CustomCommandKeybind> {
     state
         .keybinds
         .custom_commands
         .iter()
-        .find(|binding| key_matches(key, binding.key.0, binding.key.1))
+        .find(|binding| key.matches_binding(binding.key.0, binding.key.1))
         .cloned()
 }
 
-fn handle_navigate_reserved_key(state: &mut AppState, key: KeyEvent) -> bool {
-    match key.code {
+fn handle_navigate_reserved_key(state: &mut AppState, key: impl Into<AppKey>) -> bool {
+    let key = key.into();
+    match key.code() {
         KeyCode::Char('q') => {
             state.should_quit = true;
             true
@@ -794,10 +868,11 @@ fn handle_navigate_reserved_key(state: &mut AppState, key: KeyEvent) -> bool {
 }
 
 #[allow(dead_code)] // exercised in input unit tests; production uses App::handle_navigate_key
-fn handle_navigate_key(state: &mut AppState, key: KeyEvent) {
+fn handle_navigate_key(state: &mut AppState, key: impl Into<AppKey>) {
+    let key = key.into();
     state.update_dismissed = true;
 
-    if state.is_prefix(&key) || key.code == KeyCode::Esc {
+    if key.matches_binding(state.prefix_code, state.prefix_mods) || key.code() == KeyCode::Esc {
         leave_navigate_mode(state);
         return;
     }
@@ -834,72 +909,72 @@ enum NavigateAction {
     ToggleSidebar,
 }
 
-fn navigate_action_for_key(state: &AppState, key: &KeyEvent) -> Option<NavigateAction> {
+fn navigate_action_for_key(state: &AppState, key: &AppKey) -> Option<NavigateAction> {
     let kb = &state.keybinds;
-    if key_matches(key, kb.new_workspace.0, kb.new_workspace.1) {
+    if key.matches_binding(kb.new_workspace.0, kb.new_workspace.1) {
         return Some(NavigateAction::NewWorkspace);
     }
-    if key_matches(key, kb.rename_workspace.0, kb.rename_workspace.1) {
+    if key.matches_binding(kb.rename_workspace.0, kb.rename_workspace.1) {
         return Some(NavigateAction::RenameWorkspace);
     }
-    if key_matches(key, kb.close_workspace.0, kb.close_workspace.1) {
+    if key.matches_binding(kb.close_workspace.0, kb.close_workspace.1) {
         return Some(NavigateAction::CloseWorkspace);
     }
     if kb
         .previous_workspace
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::PreviousWorkspace);
     }
     if kb
         .next_workspace
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::NextWorkspace);
     }
-    if key_matches(key, kb.new_tab.0, kb.new_tab.1) {
+    if key.matches_binding(kb.new_tab.0, kb.new_tab.1) {
         return Some(NavigateAction::NewTab);
     }
     if kb
         .rename_tab
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::RenameTab);
     }
     if kb
         .previous_tab
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::PreviousTab);
     }
     if kb
         .next_tab
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::NextTab);
     }
     if kb
         .close_tab
-        .is_some_and(|(code, mods)| key_matches(key, code, mods))
+        .is_some_and(|(code, mods)| key.matches_binding(code, mods))
     {
         return Some(NavigateAction::CloseTab);
     }
-    if key_matches(key, kb.split_vertical.0, kb.split_vertical.1) {
+    if key.matches_binding(kb.split_vertical.0, kb.split_vertical.1) {
         return Some(NavigateAction::SplitVertical);
     }
-    if key_matches(key, kb.split_horizontal.0, kb.split_horizontal.1) {
+    if key.matches_binding(kb.split_horizontal.0, kb.split_horizontal.1) {
         return Some(NavigateAction::SplitHorizontal);
     }
-    if key_matches(key, kb.close_pane.0, kb.close_pane.1) {
+    if key.matches_binding(kb.close_pane.0, kb.close_pane.1) {
         return Some(NavigateAction::ClosePane);
     }
-    if key_matches(key, kb.fullscreen.0, kb.fullscreen.1) {
+    if key.matches_binding(kb.fullscreen.0, kb.fullscreen.1) {
         return Some(NavigateAction::Fullscreen);
     }
-    if key_matches(key, kb.resize_mode.0, kb.resize_mode.1) {
+    if key.matches_binding(kb.resize_mode.0, kb.resize_mode.1) {
         return Some(NavigateAction::EnterResizeMode);
     }
-    if key_matches(key, kb.toggle_sidebar.0, kb.toggle_sidebar.1) {
+    if key.matches_binding(kb.toggle_sidebar.0, kb.toggle_sidebar.1) {
         return Some(NavigateAction::ToggleSidebar);
     }
     None
@@ -1155,13 +1230,14 @@ fn apply_rename_action(state: &mut AppState, action: ModalAction) {
     }
 }
 
-fn handle_rename_key(state: &mut AppState, key: KeyEvent) {
+fn handle_rename_key(state: &mut AppState, key: impl Into<AppKey>) {
+    let key = key.into();
     if let Some(action) = modal_action_from_key(&key, RENAME_ACTIONS) {
         apply_rename_action(state, action);
         return;
     }
 
-    match key.code {
+    match key.code() {
         KeyCode::Backspace => {
             if state.name_input_replace_on_type {
                 state.name_input.clear();
@@ -1170,25 +1246,23 @@ fn handle_rename_key(state: &mut AppState, key: KeyEvent) {
                 state.name_input.pop();
             }
         }
-        KeyCode::Char(c) => {
-            if state.name_input_replace_on_type {
-                state.name_input.clear();
-                state.name_input_replace_on_type = false;
+        _ => {
+            if let Some(c) = key.text_char() {
+                if state.name_input_replace_on_type {
+                    state.name_input.clear();
+                    state.name_input_replace_on_type = false;
+                }
+                state.name_input.push(c);
             }
-            state.name_input.push(c);
         }
-        _ => {}
     }
 }
 
-fn handle_resize_key(state: &mut AppState, key: KeyEvent) {
-    if key.code == KeyCode::Esc
-        || key.code == KeyCode::Enter
-        || key_matches(
-            &key,
-            state.keybinds.resize_mode.0,
-            state.keybinds.resize_mode.1,
-        )
+fn handle_resize_key(state: &mut AppState, key: impl Into<AppKey>) {
+    let key = key.into();
+    if key.code() == KeyCode::Esc
+        || key.code() == KeyCode::Enter
+        || key.matches_binding(state.keybinds.resize_mode.0, state.keybinds.resize_mode.1)
     {
         if state.active.is_some() {
             state.mode = Mode::Terminal;
@@ -1198,7 +1272,7 @@ fn handle_resize_key(state: &mut AppState, key: KeyEvent) {
         return;
     }
 
-    match key.code {
+    match key.code() {
         KeyCode::Char('h') | KeyCode::Left => state.resize_pane(NavDirection::Left),
         KeyCode::Char('l') | KeyCode::Right => state.resize_pane(NavDirection::Right),
         KeyCode::Char('j') | KeyCode::Down => state.resize_pane(NavDirection::Down),
@@ -1224,7 +1298,8 @@ fn confirm_close_cancel(state: &mut AppState) {
     state.mode = Mode::Navigate;
 }
 
-fn handle_confirm_close_key(state: &mut AppState, key: KeyEvent) {
+fn handle_confirm_close_key(state: &mut AppState, key: impl Into<AppKey>) {
+    let key = key.into();
     match modal_action_from_key(&key, CONFIRM_CLOSE_ACTIONS) {
         Some(ModalAction::Confirm) => confirm_close_accept(state),
         Some(ModalAction::Cancel) => confirm_close_cancel(state),
@@ -1294,8 +1369,9 @@ fn apply_context_menu_action(state: &mut AppState, menu: ContextMenuState, idx: 
     }
 }
 
-fn handle_context_menu_key(state: &mut AppState, key: KeyEvent) {
-    match key.code {
+fn handle_context_menu_key(state: &mut AppState, key: impl Into<AppKey>) {
+    let key = key.into();
+    match key.code() {
         KeyCode::Esc => {
             state.context_menu = None;
             leave_modal(state);
@@ -3494,7 +3570,7 @@ mod tests {
 
         let action = terminal_direct_navigation_action(
             &state,
-            &KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
+            &AppKey::from(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)),
         );
 
         assert_eq!(action, Some(NavigateAction::FocusPaneLeft));
@@ -3739,6 +3815,19 @@ mod tests {
     }
 
     #[test]
+    fn shifted_slash_terminal_key_opens_keybind_help_from_navigate() {
+        let mut state = state_with_workspaces(&["test"]);
+
+        handle_navigate_key(
+            &mut state,
+            TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
+                .with_shifted_codepoint('?' as u32),
+        );
+
+        assert_eq!(state.mode, Mode::KeybindHelp);
+    }
+
+    #[test]
     fn rename_modal_keyboard_and_mouse_share_actions() {
         let mut state = state_with_workspaces(&["test"]);
         state.mode = Mode::RenameWorkspace;
@@ -3825,6 +3914,25 @@ mod tests {
             KeyEvent::new(KeyCode::Char('e'), KeyModifiers::empty()),
         );
         assert_eq!(state.name_input, "ne");
+    }
+
+    #[test]
+    fn rename_modal_uses_shifted_terminal_text_for_app_input() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.mode = Mode::RenameTab;
+
+        handle_rename_key(
+            &mut state,
+            TerminalKey::new(KeyCode::Char('l'), KeyModifiers::SHIFT)
+                .with_shifted_codepoint('L' as u32),
+        );
+        handle_rename_key(
+            &mut state,
+            TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
+                .with_shifted_codepoint('?' as u32),
+        );
+
+        assert_eq!(state.name_input, "L?");
     }
 
     #[test]

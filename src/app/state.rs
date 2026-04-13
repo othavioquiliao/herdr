@@ -657,10 +657,6 @@ impl AppState {
         self.sound.enabled
     }
 
-    pub fn is_prefix(&self, key: &crossterm::event::KeyEvent) -> bool {
-        key_matches(key, self.prefix_code, self.prefix_mods)
-    }
-
     pub fn estimate_pane_size(&self) -> (u16, u16) {
         if let Some(info) = self.view.pane_infos.first() {
             (info.rect.height, info.rect.width)
@@ -670,6 +666,7 @@ impl AppState {
     }
 }
 
+#[cfg(test)]
 pub fn key_matches(
     key: &crossterm::event::KeyEvent,
     expected_code: KeyCode,

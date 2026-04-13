@@ -531,6 +531,7 @@ impl Config {
                 binding: (KeyCode, KeyModifiers),
                 field: &str,
             ) -> Option<String> {
+                let binding = crate::input::normalize_app_key_binding(binding.0, binding.1, None);
                 self.seen
                     .insert((scope, binding.0, binding.1), field.to_string())
             }
@@ -540,6 +541,7 @@ impl Config {
                 scope: BindingScope,
                 binding: (KeyCode, KeyModifiers),
             ) -> Option<&str> {
+                let binding = crate::input::normalize_app_key_binding(binding.0, binding.1, None);
                 self.seen
                     .get(&(scope, binding.0, binding.1))
                     .map(String::as_str)
@@ -551,6 +553,7 @@ impl Config {
                 binding: (KeyCode, KeyModifiers),
                 field: &str,
             ) {
+                let binding = crate::input::normalize_app_key_binding(binding.0, binding.1, None);
                 self.seen
                     .entry((scope, binding.0, binding.1))
                     .or_insert_with(|| field.to_string());
@@ -1652,6 +1655,52 @@ rename_tab = "g"
             (KeyCode::Char('g'), KeyModifiers::empty())
         );
         assert_eq!(kb.rename_tab, None);
+    }
+
+    #[test]
+    fn duplicate_shifted_symbol_binding_is_rejected_after_normalization() {
+        let toml = r#"
+[keys]
+new_workspace = "?"
+rename_workspace = "shift+/"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let diagnostics = config.collect_diagnostics();
+        let kb = config.keybinds();
+
+        assert!(diagnostics.iter().any(|d| {
+            d.contains("duplicate keybinding")
+                && d.contains("keys.rename_workspace")
+                && d.contains("keys.new_workspace")
+        }));
+        assert_eq!(
+            kb.new_workspace,
+            (KeyCode::Char('?'), KeyModifiers::empty())
+        );
+        assert_eq!(
+            kb.rename_workspace,
+            (KeyCode::Char('n'), KeyModifiers::SHIFT)
+        );
+        assert_eq!(kb.rename_workspace_label, "shift+n");
+    }
+
+    #[test]
+    fn custom_command_conflicting_with_shifted_symbol_reserved_key_is_disabled() {
+        let toml = r#"
+[[keys.command]]
+key = "shift+/"
+command = "echo hi"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let diagnostics = config.collect_diagnostics();
+        let kb = config.keybinds();
+
+        assert!(diagnostics.iter().any(|d| {
+            d.contains("duplicate custom keybinding")
+                && d.contains("keys.command[0].key")
+                && d.contains("navigate.keybind_help")
+        }));
+        assert!(kb.custom_commands.is_empty());
     }
 
     #[test]
