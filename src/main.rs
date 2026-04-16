@@ -323,8 +323,8 @@ fn main() -> io::Result<()> {
     };
     info!("herdr starting, pid={}", std::process::id());
 
-    // Background auto-update (non-blocking, best-effort)
-    // Downloads and installs new version silently, notifies TUI when done.
+    // Background update check (non-blocking, best-effort)
+    // Only checks for newer versions and notifies the TUI.
     // Skipped in --no-session mode (testing).
 
     let rt = tokio::runtime::Builder::new_multi_thread()

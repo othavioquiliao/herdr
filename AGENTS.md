@@ -15,7 +15,7 @@ Terminal workspace manager for AI coding agents. Rust + ratatui.
 
 Read-only investigation can happen in the shared checkout.
 
-When starting any file-changing task, use a dedicated git worktree by default. This is required whenever parallel agent work may happen in the repository.
+Small changes or small tasks are fine in the default main worktree. If you find unrelated implementation changes already in progress in the main worktree, use a dedicated worktree instead. Use a dedicated worktree for bigger features too.
 
 Use this layout:
 
@@ -28,8 +28,6 @@ Do all code edits, tests, and validation inside the task worktree.
 Commit on the task branch in that worktree.
 
 When the change is ready, fast-forward the shared checkout at `../herdr` to the task branch commit, then push `origin/master` from `../herdr`. Do not treat the task branch as the final landing branch.
-
-You may skip a worktree only for a clearly solo, trivial change when no other agent is expected to modify the repository at the same time.
 
 If the current session is already inside an isolated task worktree, keep using it. Do not create nested worktrees.
 
