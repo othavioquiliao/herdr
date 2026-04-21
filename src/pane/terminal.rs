@@ -569,6 +569,8 @@ impl GhosttyPaneTerminal {
                 Ok(rows) => rows,
                 Err(_) => return,
             };
+            let mut grapheme_scratch = Vec::new();
+            let mut symbol_scratch = String::new();
             let mut y = 0u16;
             while y < area.height && rows.next() {
                 let mut cells = match rows.populate_cells(&mut row_cells) {
@@ -579,11 +581,22 @@ impl GhosttyPaneTerminal {
                 while x < area.width && cells.next() {
                     let wide = cells.wide().unwrap_or(crate::ghostty::CellWide::Narrow);
                     let style = ghostty_cell_style(&cells, default_fg, default_bg);
-                    let symbol = ghostty_buffer_symbol(&cells, wide)
-                        .unwrap_or_else(|_| ghostty_blank_symbol_for_width(wide).to_string());
+                    let symbol = match ghostty_buffer_symbol_into(
+                        &cells,
+                        wide,
+                        &mut grapheme_scratch,
+                        &mut symbol_scratch,
+                    ) {
+                        Ok(symbol) => symbol,
+                        Err(_) => {
+                            symbol_scratch.clear();
+                            symbol_scratch.push_str(ghostty_blank_symbol_for_width(wide));
+                            symbol_scratch.as_str()
+                        }
+                    };
                     let cell = &mut buf[(area.x + x, area.y + y)];
                     cell.reset();
-                    cell.set_symbol(&symbol);
+                    cell.set_symbol(symbol);
                     cell.set_style(style);
                     x += 1;
                 }
@@ -739,6 +752,7 @@ pub(super) fn ghostty_blank_symbol_for_width(wide: crate::ghostty::CellWide) -> 
     }
 }
 
+#[cfg(test)]
 pub(super) fn ghostty_normalize_buffer_symbol(
     symbol: &str,
     wide: crate::ghostty::CellWide,
@@ -760,18 +774,47 @@ pub(super) fn ghostty_normalize_buffer_symbol(
     ghostty_blank_symbol_for_width(wide).to_string()
 }
 
-fn ghostty_buffer_symbol(
+fn ghostty_buffer_symbol_into<'a>(
     cells: &crate::ghostty::RowCellIter<'_>,
     wide: crate::ghostty::CellWide,
-) -> Result<String, crate::ghostty::Error> {
-    let symbol = match wide {
-        crate::ghostty::CellWide::SpacerTail => String::new(),
-        crate::ghostty::CellWide::SpacerHead => " ".to_string(),
+    grapheme_scratch: &mut Vec<u32>,
+    symbol_scratch: &'a mut String,
+) -> Result<&'a str, crate::ghostty::Error> {
+    symbol_scratch.clear();
+    match wide {
+        crate::ghostty::CellWide::SpacerTail => {}
+        crate::ghostty::CellWide::SpacerHead => symbol_scratch.push(' '),
         crate::ghostty::CellWide::Narrow | crate::ghostty::CellWide::Wide => {
-            ghostty_cell_symbol(cells)?
+            cells.graphemes_into(grapheme_scratch)?;
+            if grapheme_scratch.is_empty() {
+                symbol_scratch.push(' ');
+            } else {
+                for &codepoint in grapheme_scratch.iter() {
+                    if let Some(ch) = char::from_u32(codepoint) {
+                        symbol_scratch.push(ch);
+                    }
+                }
+                if symbol_scratch.is_empty() {
+                    symbol_scratch.push(' ');
+                }
+            }
         }
+    }
+
+    let expected_width = match wide {
+        crate::ghostty::CellWide::Wide => 2,
+        crate::ghostty::CellWide::Narrow | crate::ghostty::CellWide::SpacerHead => 1,
+        crate::ghostty::CellWide::SpacerTail => 0,
     };
-    Ok(ghostty_normalize_buffer_symbol(&symbol, wide))
+    let actual_width = symbol_scratch.width();
+    if actual_width != expected_width
+        && !(wide == crate::ghostty::CellWide::Narrow && actual_width == 2)
+    {
+        symbol_scratch.clear();
+        symbol_scratch.push_str(ghostty_blank_symbol_for_width(wide));
+    }
+
+    Ok(symbol_scratch.as_str())
 }
 
 fn ghostty_reset_cell(

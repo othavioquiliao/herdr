@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
 pub(crate) const ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
+pub(crate) const HEADLESS_ANIMATION_INTERVAL: Duration = Duration::from_millis(128);
+pub(crate) const HEADLESS_ANIMATION_TICK_STEP: u32 = 8;
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);

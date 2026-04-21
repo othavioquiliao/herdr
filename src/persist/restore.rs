@@ -83,6 +83,7 @@ fn restore_workspace(
             .unwrap_or_else(crate::workspace::generate_workspace_id),
         custom_name: snap.custom_name.clone(),
         identity_cwd: snap.identity_cwd.clone(),
+        cached_git_branch: None,
         cached_git_ahead_behind: None,
         public_pane_numbers,
         next_public_pane_number,

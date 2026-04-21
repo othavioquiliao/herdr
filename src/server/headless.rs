@@ -162,6 +162,8 @@ struct ClientConnection {
     host_terminal_theme: crate::terminal_theme::TerminalTheme,
     /// Monotonic activity stamp used to choose the fallback foreground client.
     last_activity: u64,
+    /// Last frame sent to this client. Used to skip identical frame sends.
+    last_frame: Option<FrameData>,
     /// Channel for sending framed ServerMessage data to the client writer thread.
     writer: Option<std::sync::mpsc::Sender<Vec<u8>>>,
 }
@@ -465,7 +467,7 @@ impl HeadlessServer {
                 needs_render = true;
             }
 
-            self.app.sync_animation_timer(now);
+            self.app.sync_headless_animation_timer(now);
 
             // 7. Render virtually and stream frames.
             if needs_render && self.app.can_render_now(now) {
@@ -1005,6 +1007,7 @@ impl HeadlessServer {
                         terminal_size: (cols, rows),
                         host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
                         last_activity,
+                        last_frame: None,
                         writer: Some(writer),
                     },
                 );
@@ -1281,22 +1284,20 @@ impl HeadlessServer {
     /// frames to all connected clients.
     fn render_and_stream(&mut self) {
         let foreground_client_id = self.foreground_client_id;
-        let mut render_targets: Vec<(u64, (u16, u16), std::sync::mpsc::Sender<Vec<u8>>, bool)> =
-            self.clients
-                .iter()
-                .filter_map(|(&client_id, client)| {
-                    client.writer.as_ref().map(|writer| {
-                        (
-                            client_id,
-                            client.terminal_size,
-                            writer.clone(),
-                            foreground_client_id == Some(client_id),
-                        )
-                    })
-                })
-                .collect();
+        let mut render_targets: Vec<(u64, (u16, u16), bool)> = self
+            .clients
+            .iter()
+            .filter(|(_, client)| client.writer.is_some())
+            .map(|(&client_id, client)| {
+                (
+                    client_id,
+                    client.terminal_size,
+                    foreground_client_id == Some(client_id),
+                )
+            })
+            .collect();
 
-        render_targets.sort_by_key(|(client_id, _, _, is_foreground)| (*is_foreground, *client_id));
+        render_targets.sort_by_key(|(client_id, _, is_foreground)| (*is_foreground, *client_id));
 
         if render_targets.is_empty() {
             let (cols, rows) = self.effective_size;
@@ -1310,10 +1311,23 @@ impl HeadlessServer {
         }
 
         let mut broken_clients: Vec<u64> = Vec::new();
-        for (client_id, (cols, rows), writer, is_foreground) in render_targets {
+        for (client_id, (cols, rows), is_foreground) in render_targets {
             let area = Rect::new(0, 0, cols, rows);
             let (buffer, cursor) = render_virtual(&mut self.app.state, area, is_foreground);
-            let message = ServerMessage::Frame(FrameData::from_ratatui_buffer(&buffer, cursor));
+            let frame = FrameData::from_ratatui_buffer(&buffer, cursor);
+
+            let Some(client) = self.clients.get_mut(&client_id) else {
+                continue;
+            };
+            let Some(writer) = client.writer.as_ref().cloned() else {
+                continue;
+            };
+
+            if client.last_frame.as_ref() == Some(&frame) {
+                continue;
+            }
+
+            let message = ServerMessage::Frame(frame.clone());
             let serialized = match Self::frame_server_message(&message) {
                 Ok(framed) => framed,
                 Err(err) => {
@@ -1326,7 +1340,10 @@ impl HeadlessServer {
             if writer.send(serialized).is_err() {
                 debug!(client_id, "client writer channel closed, marking as broken");
                 broken_clients.push(client_id);
+                continue;
             }
+
+            client.last_frame = Some(frame);
         }
 
         if !broken_clients.is_empty() {
@@ -1349,7 +1366,7 @@ impl HeadlessServer {
     fn handle_scheduled_tasks_headless(&mut self, now: Instant) -> bool {
         let mut changed = false;
 
-        self.app.sync_animation_timer(now);
+        self.app.sync_headless_animation_timer(now);
 
         // No resize polling needed — server has no terminal.
         // Client resize messages drive size changes instead.
@@ -1379,8 +1396,12 @@ impl HeadlessServer {
             .next_animation_tick
             .is_some_and(|deadline| now >= deadline)
         {
-            self.app.state.spinner_tick = self.app.state.spinner_tick.wrapping_add(1);
-            self.app.next_animation_tick = Some(now + app::ANIMATION_INTERVAL);
+            self.app.state.spinner_tick = self
+                .app
+                .state
+                .spinner_tick
+                .wrapping_add(app::HEADLESS_ANIMATION_TICK_STEP);
+            self.app.next_animation_tick = Some(now + app::HEADLESS_ANIMATION_INTERVAL);
             changed = true;
         }
 
@@ -1412,7 +1433,7 @@ impl HeadlessServer {
             self.app.save_session_now();
         }
 
-        self.app.sync_animation_timer(now);
+        self.app.sync_headless_animation_timer(now);
         changed
     }
 
@@ -1832,7 +1853,7 @@ mod tests {
         let app = crate::app::App::new(&config, true, None, None, api_rx, api::EventHub::default());
 
         let dir = std::env::temp_dir().join(format!(
-            "herdr-headless-test-{}-{}",
+            "hh-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1942,7 +1963,7 @@ mod tests {
     #[test]
     fn prepare_socket_path_removes_stale_socket() {
         let dir = std::env::temp_dir().join(format!(
-            "herdr-test-stale-{}-{}",
+            "hs-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1969,7 +1990,7 @@ mod tests {
     #[test]
     fn prepare_socket_path_rejects_live_socket() {
         let dir = std::env::temp_dir().join(format!(
-            "herdr-test-live-{}-{}",
+            "hl-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2062,6 +2083,7 @@ mod tests {
                     }),
                 },
                 last_activity: 1,
+                last_frame: None,
                 writer: None,
             },
         );
@@ -2082,6 +2104,7 @@ mod tests {
                     }),
                 },
                 last_activity: 2,
+                last_frame: None,
                 writer: None,
             },
         );
@@ -2128,6 +2151,7 @@ mod tests {
                 terminal_size: (120, 40),
                 host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
                 last_activity: 1,
+                last_frame: None,
                 writer: Some(desktop_tx),
             },
         );
@@ -2137,6 +2161,7 @@ mod tests {
                 terminal_size: (80, 24),
                 host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
                 last_activity: 2,
+                last_frame: None,
                 writer: Some(phone_tx),
             },
         );
@@ -2154,6 +2179,41 @@ mod tests {
     }
 
     #[test]
+    fn render_and_stream_skips_identical_frame_sends() {
+        let mut server = test_headless_server();
+        server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("test")];
+        server.app.state.active = Some(0);
+        server.app.state.selected = 0;
+        server.app.state.mode = crate::app::Mode::Terminal;
+
+        let (client_tx, client_rx) = std::sync::mpsc::channel();
+
+        server.clients.insert(
+            1,
+            ClientConnection {
+                terminal_size: (80, 24),
+                host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
+                last_activity: 1,
+                last_frame: None,
+                writer: Some(client_tx),
+            },
+        );
+        server.foreground_client_id = Some(1);
+        server.sync_foreground_client_state();
+        server.resize_shared_runtime_to_effective_size();
+
+        server.render_and_stream();
+        let first = client_rx.recv_timeout(Duration::from_millis(100));
+        assert!(first.is_ok(), "expected first frame to be sent");
+
+        server.render_and_stream();
+        assert!(
+            client_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "identical frame should not be sent twice"
+        );
+    }
+
+    #[test]
     fn clipboard_write_targets_foreground_client_only() {
         let mut server = test_headless_server();
         let (background_tx, background_rx) = std::sync::mpsc::channel();
@@ -2165,6 +2225,7 @@ mod tests {
                 terminal_size: (120, 40),
                 host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
                 last_activity: 1,
+                last_frame: None,
                 writer: Some(background_tx),
             },
         );
@@ -2174,6 +2235,7 @@ mod tests {
                 terminal_size: (80, 24),
                 host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
                 last_activity: 2,
+                last_frame: None,
                 writer: Some(foreground_tx),
             },
         );

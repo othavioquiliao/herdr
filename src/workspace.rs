@@ -44,6 +44,8 @@ pub struct Workspace {
     pub custom_name: Option<String>,
     /// Fallback workspace identity source for tests, old snapshots, or missing runtimes.
     pub identity_cwd: PathBuf,
+    /// Cached current git branch for the workspace repo.
+    pub(crate) cached_git_branch: Option<String>,
     /// Cached ahead/behind counts for the workspace repo's current branch upstream.
     pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
     /// Stable-ish public pane numbers within this workspace.
@@ -98,7 +100,8 @@ impl Workspace {
         Ok(Self {
             id: generate_workspace_id(),
             custom_name: None,
-            identity_cwd: initial_cwd,
+            identity_cwd: initial_cwd.clone(),
+            cached_git_branch: git_branch(&initial_cwd),
             cached_git_ahead_behind: None,
             public_pane_numbers,
             next_public_pane_number: 2,
@@ -318,8 +321,7 @@ impl Workspace {
     }
 
     pub fn branch(&self) -> Option<String> {
-        self.resolved_identity_cwd()
-            .and_then(|cwd| git_branch(&cwd))
+        self.cached_git_branch.clone()
     }
 
     pub fn git_ahead_behind(&self) -> Option<(usize, usize)> {
@@ -327,9 +329,9 @@ impl Workspace {
     }
 
     pub fn refresh_git_ahead_behind(&mut self) {
-        self.cached_git_ahead_behind = self
-            .resolved_identity_cwd()
-            .and_then(|cwd| git_ahead_behind(&cwd));
+        let cwd = self.resolved_identity_cwd();
+        self.cached_git_branch = cwd.as_deref().and_then(git_branch);
+        self.cached_git_ahead_behind = cwd.as_deref().and_then(git_ahead_behind);
     }
 
     pub fn focused_runtime(&self) -> Option<&PaneRuntime> {
@@ -447,7 +449,8 @@ impl Workspace {
         Self {
             id: generate_workspace_id(),
             custom_name: Some(name.to_string()),
-            identity_cwd,
+            identity_cwd: identity_cwd.clone(),
+            cached_git_branch: git_branch(&identity_cwd),
             cached_git_ahead_behind: None,
             public_pane_numbers,
             next_public_pane_number: 2,
